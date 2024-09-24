@@ -390,6 +390,18 @@
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
     <script>
+        (function(originalFetch){
+            window.fetch = function(){
+                let args  = Array.from(arguments);
+                if(typeof(args[0]) === 'string'){
+                    console.log("FETCH: ", args[0]);
+                }else if(args[0] && typeof(args[0].url) === "string"){
+                    console.log("FETCH: ", args[0].url);
+                }
+                return originalFetch(window, args)
+            }
+        })(window.fetch);
+
         const searchForm = document.getElementById('searchForm');
         const searchInput = document.getElementById('searchInput');
         const resultsContainer = document.getElementById('resultsContainer');
