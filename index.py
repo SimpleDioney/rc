@@ -712,6 +712,15 @@ def proxy():
     
     return jsonify({"embed_url": adjusted_url})
 
+@app.route('/api/console-debug', methods=['POST'])
+def console_debug():
+    url = request.args.get('url')
+    if url is not None:
+        print(f"FETCH: {url}")
+        return "Success", 200
+    
+    return "Error", 400
+
 if __name__ == "__main__":
     create_super_admin(app)
     app.run(debug=True)

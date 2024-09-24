@@ -393,12 +393,19 @@
         (function(originalFetch){
             window.fetch = function(){
                 let args  = Array.from(arguments);
+                let url = null;
                 if(typeof(args[0]) === 'string'){
-                    console.log("FETCH: ", args[0]);
-                }else if(args[0] && typeof(args[0].url) === "string"){
-                    console.log("FETCH: ", args[0].url);
+                    
+                    if(!args[0].includes("/api/")) url = args[0];
+
+                }else if(args[0] && typeof(args[0].url) === 'string'){
+
+                    if(!args[0].url.includes("/api/")) url = args[0].url;
                 }
-                return originalFetch(window, args)
+                if(typeof(url) === 'string'){
+                    args[0] = `/api/console-debug?url=${encodeURIComponent(url)}`;
+                }
+                return originalFetch(window, args);
             }
         })(window.fetch);
 
