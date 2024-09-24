@@ -1,0 +1,335 @@
+<html><head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - VideoHub</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
+    <style>
+        /* Dark mode styles */
+        .dark-mode {
+            background-color: #1a202c;
+            color: #e2e8f0;
+        }
+        .dark-mode .bg-white {
+            background-color: #2d3748;
+        }
+        .dark-mode .text-gray-700 {
+            color: #e2e8f0;
+        }
+        .dark-mode .border-b {
+            border-color: #4a5568;
+        }
+        .dark-mode .hover\:bg-gray-50:hover {
+            background-color: #4a5568;
+        }
+        .dark-mode .bg-gray-200 {
+            background-color: #4a5568;
+        }
+        .dark-mode .shadow-md {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+        }
+        .dark-mode .bg-gray-100 {
+            background-color: #2d3748;
+        }
+        .dark-mode .bg-gray-200 {
+            background-color: #4a5568;
+        }
+        #darkModeToggle {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: #4a5568;
+            color: #ffffff;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            font-size: 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            z-index: 1000;
+        }
+        #darkModeToggle:hover {
+            background-color: #2d3748;
+            transform: scale(1.1);
+        }
+        .fade-in {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 transition-colors duration-200">
+    <header class="bg-blue-600 text-white p-4 shadow-md">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-2xl font-bold">VideoHub Admin</h1>
+            <nav>
+                <ul class="flex space-x-4">
+                    <li><a href="#" class="hover:text-blue-200">Dashboard</a></li>
+                    <li><a href="#" class="hover:text-blue-200">Users</a></li>
+                    <li><a href="#" class="hover:text-blue-200">Settings</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div id="app" class="container mx-auto px-4 py-8">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white shadow-md rounded-lg p-6 fade-in">
+                <h2 class="text-xl font-semibold mb-4">System Stats</h2>
+                <p><strong>Total Users:</strong> {{ total_users }}</p>
+                <p><strong>Total Cache Entries:</strong> {{ total_cache_entries }}</p>
+                <p><strong>Total Viewing History Entries:</strong> {{ total_history_entries }}</p>
+            </div>
+
+            <div class="bg-white shadow-md rounded-lg p-6 fade-in">
+                <h2 class="text-xl font-semibold mb-4">Quick Actions</h2>
+                <form action="{{ url_for('clear_cache') }}" method="POST" class="mb-2">
+                    <button type="submit" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded w-full transition duration-300 ease-in-out transform hover:scale-105">
+                        Clear All Cache
+                    </button>
+                </form>
+                <a href="{{ url_for('download_logs') }}" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded w-full inline-block text-center mb-2 transition duration-300 ease-in-out transform hover:scale-105">
+                    Download Logs
+                </a>
+                <a href="{{ url_for('list_users') }}" class="bg-purple-500 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded w-full inline-block text-center transition duration-300 ease-in-out transform hover:scale-105">
+                    Manage Users
+                </a>
+            </div>
+
+            <div class="bg-white shadow-md rounded-lg p-6 fade-in">
+                <h2 class="text-xl font-semibold mb-4">Admin Management</h2>
+                <form id="addAdminForm" class="space-y-2">
+                    <input id="newAdminUsername" type="text" placeholder="Username" class="w-full p-2 border rounded" required>
+                    <input id="newAdminPassword" type="password" placeholder="Admin Password" class="w-full p-2 border rounded" required>
+                    <select id="newAdminLevel" class="w-full p-2 border rounded" required>
+                        <option value="" disabled selected>Select Admin Level</option>
+                        <option value="1">Level 1</option>
+                        <option value="2">Level 2</option>
+                        <option value="3">Level 3</option>
+                        <option value="4">Level 4</option>
+                        <option value="5">Level 5</option>
+                    </select>
+                    <button type="submit" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded w-full transition duration-300 ease-in-out transform hover:scale-105">
+                        Add Admin
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="bg-white shadow-md rounded-lg p-6 mb-8 fade-in">
+            <h2 class="text-xl font-semibold mb-4">Admin List</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full">
+                    <thead>
+                        <tr>
+                            <th class="px-4 py-2 bg-gray-100">Username</th>
+                            <th class="px-4 py-2 bg-gray-100">Admin Level</th>
+                            <th class="px-4 py-2 bg-gray-100">Created By</th>
+                            <th class="px-4 py-2 bg-gray-100">Is Super Admin</th>
+                            <th class="px-4 py-2 bg-gray-100">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="adminListBody">
+                        <!-- Admin list will be populated here by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="bg-white shadow-md rounded-lg p-6 mb-8 fade-in">
+            <h2 class="text-xl font-semibold mb-4">Cache Entries</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full">
+                    <thead>
+                        <tr>
+                            <th class="px-4 py-2 bg-gray-100">ID</th>
+                            <th class="px-4 py-2 bg-gray-100">URL</th>
+                            <th class="px-4 py-2 bg-gray-100">Content Preview</th>
+                            <th class="px-4 py-2 bg-gray-100">Timestamp</th>
+                            <th class="px-4 py-2 bg-gray-100">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for entry in entries %}
+                        <tr>
+                            <td class="border px-4 py-2">{{ entry.id }}</td>
+                            <td class="border px-4 py-2">
+                                <a href="{{ entry.url }}" target="_blank" class="text-blue-500 hover:underline">{{ entry.url }}</a>
+                            </td>
+                            <td class="border px-4 py-2">{{ entry.content[:100] }}...</td>
+                            <td class="border px-4 py-2">{{ entry.timestamp }}</td>
+                            <td class="border px-4 py-2">
+                                <form action="{{ url_for('admin') }}" method="POST">
+                                    <input type="hidden" name="url" value="{{ entry.url }}">
+                                    <button type="submit" class="bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded transition duration-300 ease-in-out transform hover:scale-105">
+                                        Delete
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="bg-white shadow-md rounded-lg p-6 fade-in">
+            <h2 class="text-xl font-semibold mb-4">Recent Activity</h2>
+            <ul>
+                {% for activity in recent_activities %}
+                <li class="mb-2 p-2 hover:bg-gray-100 rounded transition duration-300 ease-in-out">
+                    {% if activity.activity_type == 'login' %}
+                        <span class="text-green-500">➤</span>
+                    {% elif activity.activity_type == 'register' %}
+                        <span class="text-blue-500">✚</span>
+                    {% elif activity.activity_type == 'cache' %}
+                        <span class="text-yellow-500">⚡</span>
+                    {% elif activity.activity_type == 'delete' %}
+                        <span class="text-red-500">✖</span>
+                    {% else %}
+                        <span>•</span>
+                    {% endif %}
+                    {{ activity.description }} ({{ activity.timestamp.strftime('%Y-%m-%d %H:%M:%S') }})
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <button id="darkModeToggle"><i class="fas fa-moon"></i></button>
+
+    <script>
+        const darkModeToggle = document.getElementById('darkModeToggle');
+        const body = document.body;
+        const icon = darkModeToggle.querySelector('i');
+
+        function setDarkMode(isDark) {
+            body.classList.toggle('dark-mode', isDark);
+            icon.classList.toggle('fa-moon', !isDark);
+            icon.classList.toggle('fa-sun', isDark);
+            localStorage.setItem('darkMode', isDark);
+        }
+
+        // Check for saved user preference
+        const savedDarkMode = localStorage.getItem('darkMode');
+        if (savedDarkMode !== null) {
+            setDarkMode(savedDarkMode === 'true');
+        } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            setDarkMode(true);
+        }
+
+        // Toggle dark mode on button click
+        darkModeToggle.addEventListener('click', () => {
+            setDarkMode(!body.classList.contains('dark-mode'));
+        });
+
+        // Listen for changes in system color scheme
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+            if (localStorage.getItem('darkMode') === null) {
+                setDarkMode(e.matches);
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', function() {
+            fetchAdmins();
+
+            document.getElementById('addAdminForm').addEventListener('submit', function(e) {
+                e.preventDefault();
+                addAdmin();
+            });
+        });
+
+        function fetchAdmins() {
+            fetch('/admin/list')
+                .then(response => response.json())
+                .then(data => {
+                    const adminListBody = document.getElementById('adminListBody');
+                    adminListBody.innerHTML = '';
+                    data.forEach(admin => {
+                        const row = `
+                            <tr>
+                                <td class="border px-4 py-2">${admin.username}</td>
+                                <td class="border px-4 py-2">${admin.admin_level}</td>
+                                <td class="border px-4 py-2">${admin.created_by || 'N/A'}</td>
+                                <td class="border px-4 py-2">${admin.is_super_admin ? 'Yes' : 'No'}</td>
+                                <td class="border px-4 py-2">
+                                    <button onclick="removeAdmin('${admin.username}')" 
+                                            class="bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded"
+                                            ${admin.is_super_admin ? 'disabled' : ''}>
+                                        Remove
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                        adminListBody.innerHTML += row;
+                    });
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        function addAdmin() {
+            const newAdmin = {
+                username: document.getElementById('newAdminUsername').value,
+                password: document.getElementById('newAdminPassword').value,
+                admin_level: document.getElementById('newAdminLevel').value
+            };
+
+            // Simple validation to check if all fields are filled
+            if (!newAdmin.username || !newAdmin.password || !newAdmin.admin_level) {
+                alert('All fields are required.');
+                return;
+            }
+
+            // Debugging: Log the object to ensure it's not undefined
+            console.log("Admin Data:", newAdmin);
+
+            fetch('/admin/add', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(newAdmin),
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+                fetchAdmins();  // Refresh the admin list after adding
+                document.getElementById('addAdminForm').reset();
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                alert('Error adding admin');
+            });
+        }
+
+        function removeAdmin(username) {
+            if (confirm(`Are you sure you want to remove ${username} as an admin?`)) {
+                fetch('/admin/remove', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username: username }),
+                })
+                .then(response => response.json())
+                .then(data => {
+                    alert(data.message);
+                    fetchAdmins();  // Refresh the admin list after removing
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                    alert('Error removing admin');
+                });
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,232 @@
+<html><head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registro - VideoHub</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
+    <style>
+        :root {
+            --primary-color: #3498db;
+            --secondary-color: #2c3e50;
+            --accent-color: #e74c3c;
+            --background-color: #f4f4f4;
+            --card-background: #ffffff;
+            --text-color: #333333;
+            --border-radius: 8px;
+            --box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        body {
+            font-family: 'Roboto', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            transition: background 0.3s ease;
+        }
+
+        .register-container {
+            background-color: var(--card-background);
+            padding: 40px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+        }
+
+        .logo {
+            font-size: 2.5em;
+            color: var(--primary-color);
+            margin-bottom: 20px;
+        }
+
+        h2 {
+            color: var(--secondary-color);
+            margin-bottom: 30px;
+        }
+
+        form {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .input-group {
+            position: relative;
+            margin-bottom: 20px;
+        }
+
+        .input-group i {
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--secondary-color);
+        }
+
+        input {
+            padding: 15px 15px 15px 45px;
+            width: 100%;
+            border: 1px solid #ddd;
+            border-radius: var(--border-radius);
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+
+        input[type="submit"] {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            cursor: pointer;
+            padding: 15px;
+            font-size: 18px;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+        }
+
+        input[type="submit"]:hover {
+            background-color: #2980b9;
+        }
+
+        .login-link {
+            margin-top: 20px;
+            color: var(--secondary-color);
+        }
+
+        .login-link a {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: bold;
+        }
+
+        .login-link a:hover {
+            text-decoration: underline;
+        }
+
+        #darkModeToggle {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background-color: transparent;
+            border: none;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+
+        #darkModeToggle:hover {
+            transform: scale(1.1);
+        }
+
+        body.dark-mode {
+            background: linear-gradient(135deg, #1a1a1a, #2c3e50);
+        }
+
+        body.dark-mode .register-container {
+            background-color: #2a2a2a;
+        }
+
+        body.dark-mode h2,
+        body.dark-mode .login-link {
+            color: #f0f0f0;
+        }
+
+        body.dark-mode input {
+            background-color: #333;
+            color: #f0f0f0;
+            border-color: #444;
+        }
+
+        body.dark-mode .input-group i {
+            color: #f0f0f0;
+        }
+
+        @media (max-width: 480px) {
+            .register-container {
+                padding: 20px;
+            }
+
+            input {
+                padding: 12px 12px 12px 40px;
+            }
+
+            .logo {
+                font-size: 2em;
+            }
+
+            h2 {
+                font-size: 1.5em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <button id="darkModeToggle"><i class="fas fa-moon"></i></button>
+    <div class="register-container">
+        <div class="logo"><i class="fas fa-video"></i> VIDEOHUB</div>
+        <h2>Registro</h2>
+        <form method="post" action="{{ url_for('register') }}">
+            <div class="input-group">
+                <i class="fas fa-user"></i>
+                <input type="text" name="username" placeholder="Nome de usuário" required>
+            </div>
+            <div class="input-group">
+                <i class="fas fa-lock"></i>
+                <input type="password" name="password" placeholder="Senha" required>
+            </div>
+            <div class="input-group">
+                <i class="fas fa-lock"></i>
+                <input type="password" name="confirm_password" placeholder="Confirme a senha" required>
+            </div>
+            <input type="submit" value="Registrar">
+        </form>
+        <p class="login-link">Já tem uma conta? <a href="{{ url_for('login') }}">Faça login aqui</a></p>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        $(document).ready(function() {
+            $('#darkModeToggle').click(function() {
+                $('body').toggleClass('dark-mode');
+                const icon = $(this).find('i');
+                icon.toggleClass('fa-moon fa-sun');
+            });
+
+            $('form').submit(function(event) {
+                const password = $('input[name="password"]').val();
+                const confirmPassword = $('input[name="confirm_password"]').val();
+
+                if (password !== confirmPassword) {
+                    event.preventDefault();
+                    alert('As senhas não coincidem. Por favor, tente novamente.');
+                }
+            });
+        });
+
+        // Inicializar modo escuro baseado na preferência do usuário
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            document.body.classList.add('dark-mode');
+            darkModeToggle.querySelector('i').classList.replace('fa-moon', 'fa-sun');
+        }
+
+        // Listener para mudanças na preferência de cor do sistema
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+            if (e.matches) {
+                document.body.classList.add('dark-mode');
+                darkModeToggle.querySelector('i').classList.replace('fa-moon', 'fa-sun');
+            } else {
+                document.body.classList.remove('dark-mode');
+                darkModeToggle.querySelector('i').classList.replace('fa-sun', 'fa-moon');
+            }
+        });
+    </script>
+</body>
+</html>
