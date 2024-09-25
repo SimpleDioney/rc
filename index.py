@@ -712,12 +712,17 @@ def proxy():
     
     return jsonify({"embed_url": adjusted_url})
 
-@app.route('/api/console-debug', methods=['POST'])
+@app.route('/api/console-debug', methods=['GET'])
 def console_debug():
     url = request.args.get('url')
+    print(f"FETCH: {url}")
     if url is not None:
-        print(f"FETCH: {url}")
-        return "Success", 200
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            return Response(response.content), 200
+        except:
+            return "Not Found", 404
     
     return "Error", 400
 
