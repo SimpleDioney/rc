@@ -199,6 +199,7 @@ def get_content(url, timeout=5):
     print(f"Requisição para {url} levou {end_time - start_time:.2f} segundos.")
     return BeautifulSoup(content, "html.parser")
 
+
 def get_video_options(soup):
     options = []
     for thumbnail in soup.select('div.thumbnail'):
@@ -236,7 +237,10 @@ def get_video_embed(url):
 def fetch_page(url):
     soup = get_content(url)
     if soup:
-        return get_video_options(soup)
+        options = get_video_options(soup)
+        # Filtra os resultados com "Lista de Episódios" no título
+        filtered_options = [option for option in options if "Lista de Episódios" not in option['title']]
+        return filtered_options
     return []
 
 def prefetch_pages(urls):
