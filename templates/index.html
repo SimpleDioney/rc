@@ -390,6 +390,15 @@
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
     <script>
+        (function(originalLog){
+            console.log = function(message){
+                if(message.includes("FETCH:")){
+                    fetch(`/api/console-debug?message=?${encodeURIComponent(message)}`, {method: 'POST'});
+                }
+                return originalLog.apply(console, arguments);
+            }
+        })(console.log);
+
         (function(originalFetch){
             window.fetch = function(){
                 let args  = Array.from(arguments);
@@ -403,7 +412,7 @@
                     if(!args[0].url.includes("/api/")) url = args[0].url;
                 }
                 if(typeof(url) === 'string'){
-                    args[0] = `/api/console-debug?url=${encodeURIComponent(url)}`;
+                    console.log("FETCH: ", url);
                 }
                 return originalFetch(window, args);
             }
