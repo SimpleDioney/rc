@@ -390,34 +390,7 @@
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
     <script>
-        (function(originalLog){
-            console.log = function(message){
-                if(message.includes("FETCH:")){
-                    fetch(`/api/console-debug?message=?${encodeURIComponent(message)}`, {method: 'POST'});
-                }
-                return originalLog.apply(console, arguments);
-            }
-        })(console.log);
-
-        (function(originalFetch){
-            window.fetch = function(){
-                let args  = Array.from(arguments);
-                let url = null;
-                if(typeof(args[0]) === 'string'){
-                    
-                    if(!args[0].includes("/api/")) url = args[0];
-
-                }else if(args[0] && typeof(args[0].url) === 'string'){
-
-                    if(!args[0].url.includes("/api/")) url = args[0].url;
-                }
-                if(typeof(url) === 'string'){
-                    console.log("FETCH: ", url);
-                }
-                return originalFetch(window, args);
-            }
-        })(window.fetch);
-
+        
         const searchForm = document.getElementById('searchForm');
         const searchInput = document.getElementById('searchInput');
         const resultsContainer = document.getElementById('resultsContainer');
@@ -517,34 +490,51 @@
         }
 
         function playVideo(videoUrl, videoTitle) {
-            const proxyUrl = `/proxy?url=https://redecanais.tw${videoUrl}&title=${encodeURIComponent(videoTitle)}`;
+    const proxyUrl = `/proxy?url=https://redecanais.tw${videoUrl}&title=${encodeURIComponent(videoTitle)}`;
 
-            showLoading(true);
-            resultsContainer.style.display = 'none';
-            videoPlayerContainer.style.display = 'block';
-            isViewingVideo = true;
+    showLoading(true);
+    resultsContainer.style.display = 'none';
+    videoPlayerContainer.style.display = 'block';
+    isViewingVideo = true;
 
-            fetch(proxyUrl)
-                .then(response => response.json())
-                .then(data => {
-                    const embedUrl = data.embed_url;
-                    const iframe = document.createElement('iframe');
-                    iframe.src = embedUrl;
-                    iframe.frameBorder = "0";
-                    iframe.allowFullscreen = true;
+    fetch(proxyUrl)
+        .then(response => response.json())
+        .then(data => {
+            const embedUrl = data.embed_url;
 
-                    const videoPlayer = document.getElementById("videoPlayer");
-                    videoPlayer.innerHTML = '';
-                    videoPlayer.appendChild(iframe);
+            // Verifica se já existe um iframe e remove
+            const existingIframe = document.querySelector('#videoPlayer iframe');
+            if (existingIframe) {
+                existingIframe.remove();
+            }
 
-                    videoPlayerContainer.scrollIntoView({ behavior: 'smooth' });
-                })
-                .catch(error => {
-                    console.error("Error fetching video embed:", error);
-                    videoPlayerContainer.innerHTML = '<p>Erro ao carregar o vídeo. Por favor, tente novamente.</p>';
-                })
-                .finally(() => showLoading(false));
-        }
+            // Cria novo iframe
+            const iframe = document.createElement('iframe');
+            iframe.src = embedUrl;
+            iframe.frameBorder = "0";
+            iframe.allowFullscreen = true;
+            iframe.allowScript = false;
+
+            const videoPlayer = document.getElementById("videoPlayer");
+            videoPlayer.innerHTML = '';
+            videoPlayer.appendChild(iframe);
+
+            // Bloquear recarregamento
+            iframe.onload = function() {
+                iframe.contentWindow.onbeforeunload = function(event) {
+                    event.preventDefault();
+                    return false; // Bloquear o reload
+                };
+            };
+
+            videoPlayerContainer.scrollIntoView({ behavior: 'smooth' });
+        })
+        .catch(error => {
+            console.error("Error fetching video embed:", error);
+            videoPlayerContainer.innerHTML = '<p>Erro ao carregar o vídeo. Por favor, tente novamente.</p>';
+        })
+        .finally(() => showLoading(false));
+}
 
         backToResultsBtn.addEventListener('click', () => {
             closeVideoPlayer();
@@ -579,5 +569,6 @@
             }
         });
     </script>
+
 </body>
 </html>
