@@ -1,0 +1,684 @@
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VideoHub - Busca de Vídeos Aprimorada</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #6200ea;
+            --secondary-color: #3700b3;
+            --accent-color: #03dac6;
+            --background-color: #f5f5f5;
+            --card-background: #ffffff;
+            --text-color: #333333;
+            --border-radius: 12px;
+            --box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            --gradient-start: #6200ea;
+            --gradient-end: #3700b3;
+        }
+
+        body {
+            background-color: var(--background-color);
+            font-family: 'Poppins', sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            color: var(--text-color);
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            color: white;
+            padding: 30px 0;
+            box-shadow: var(--box-shadow);
+        }
+
+        header .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 2.8em;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        #searchForm {
+            display: flex;
+            margin-bottom: 20px;
+            width: 100%;
+            max-width: 600px;
+        }
+
+        #searchInput {
+            flex-grow: 1;
+            padding: 12px 20px;
+            font-size: 16px;
+            border: none;
+            border-radius: var(--border-radius) 0 0 var(--border-radius);
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        #searchButton {
+            background-color: var(--accent-color);
+            color: var(--secondary-color);
+            border: none;
+            padding: 12px 25px;
+            cursor: pointer;
+            border-radius: 0 var(--border-radius) var(--border-radius) 0;
+            font-weight: 600;
+            transition: background-color 0.3s ease;
+        }
+
+        #searchButton:hover {
+            background-color: #00bfa5;
+        }
+
+        #clearSearch {
+            background-color: var(--accent-color);
+            color: var(--secondary-color);
+            border: none;
+            padding: 12px 15px;
+            cursor: pointer;
+            border-radius: 0;
+            font-weight: 600;
+            transition: background-color 0.3s ease;
+        }
+
+        #clearSearch:hover {
+            background-color: #00bfa5;
+        }
+
+        .user-actions {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .user-actions button {
+            background-color: transparent;
+            color: white;
+            border: 2px solid white;
+            padding: 10px 20px;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .user-actions button:hover {
+            background-color: white;
+            color: var(--primary-color);
+        }
+
+        footer {
+            background-color: var(--secondary-color);
+            color: white;
+            text-align: center;
+            padding: 20px 0;
+            margin-top: 40px;
+        }
+
+        #history-list {
+            margin-top: 30px;
+        }
+
+        #history-list ul {
+            list-style-type: none;
+            padding: 0;
+        }
+
+        #history-list li {
+            background-color: var(--card-background);
+            margin-bottom: 15px;
+            padding: 20px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            transition: transform 0.3s ease;
+        }
+
+        #history-list li:hover {
+            transform: translateY(-5px);
+        }
+
+        
+
+        .videoCard {
+            display: flex;
+            flex-direction: column;
+            background-color: var(--card-background);
+            border-radius: var(--border-radius);
+            overflow: hidden;
+            box-shadow: var(--box-shadow);
+            transition: transform 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease;
+        }
+
+        .videoCard:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .videoCard img {
+            width: 100%;
+            height: 200px;
+            object-fit: cover;
+        }
+
+        .videoCard .content {
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+        }
+
+        .videoCard h3 {
+            margin: 0 0 10px 0;
+            font-size: 1.1em;
+            line-height: 1.4;
+        }
+
+        .videoCard button {
+            margin-top: auto;
+            padding: 10px;
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .videoCard button:hover {
+            background-color: #c0392b;
+        }
+
+        #videoPlayerContainer {
+            display: none;
+            margin-top: 20px;
+            background-color: var(--card-background);
+            border-radius: var(--border-radius);
+            overflow: hidden;
+            box-shadow: var(--box-shadow);
+        }
+
+        #videoPlayer {
+            position: relative;
+            padding-bottom: 56.25%;
+            height: 0;
+            overflow: hidden;
+        }
+
+        #videoPlayer iframe {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #backToResults {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        #backToResults:hover {
+            background-color: #2980b9;
+        }
+
+        footer {
+            background-color: var(--secondary-color);
+            color: white;
+            text-align: center;
+            padding: 20px 0;
+            margin-top: 40px;
+        }
+
+        #loading {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 1.2em;
+            color: var(--secondary-color);
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top-color: var(--primary-color);
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        #resultsContainer {
+        display: flex;
+        flex-direction: column;
+        gap: 30px;
+    }
+
+    .season-container {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+    }
+
+    .season-container h2 {
+        color: var(--primary-color);
+        border-bottom: 2px solid var(--accent-color);
+        padding-bottom: 10px;
+        margin-bottom: 20px;
+    }
+
+    .episode-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        gap: 20px;
+    }
+
+
+
+@media (max-width: 768px) {
+    .episode-container {
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        justify-content: center;
+    }
+    
+    .videoCard {
+        width: 100%;
+        max-width: 250px;
+    }
+}
+        #darkModeToggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: var(--secondary-color);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5em;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        #darkModeToggle:hover {
+            background-color: var(--primary-color);
+            transform: scale(1.1);
+        }
+
+
+        /* Dark mode styles */
+        body.dark-mode {
+            --background-color: #121212;
+            --card-background: #1e1e1e;
+            --text-color: #e0e0e0;
+        }
+
+        body.dark-mode #searchInput {
+            background-color: #2a2a2a;
+            color: #e0e0e0;
+        }
+
+        body.dark-mode .videoCard {
+            background-color: var(--card-background);
+        }
+
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2em;
+            }
+
+            #searchForm {
+                flex-direction: column;
+            }
+
+            #searchInput,
+            #searchButton,
+            #clearSearch {
+                border-radius: var(--border-radius);
+                width: 100%;
+            }
+
+            #searchButton,
+            #clearSearch {
+                margin-top: 10px;
+            }
+
+            .user-actions {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            #darkModeToggle {
+                width: 50px;
+                height: 50px;
+                font-size: 1.2em;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <div class="container">
+            <h1><i class="fas fa-video"></i> VideoHub</h1>
+            <form id="searchForm">
+                <input type="text" id="searchInput" placeholder="Digite sua busca...">
+                <button type="button" id="clearSearch"><i class="fas fa-times"></i></button>
+                <button type="submit" id="searchButton"><i class="fas fa-search"></i></button>
+            </form>
+            <div class="user-actions">
+                <button id="historyButton"><i class="fas fa-history"></i> Histórico</button>
+                <button id="logoutButton"><i class="fas fa-sign-out-alt"></i> Sair</button>
+            </div>
+        </div>
+    </header>
+    <main class="container">
+        <div id="loading" style="display: none;">
+            <div class="loading-spinner"></div>
+            <p>Carregando resultados...</p>
+        </div>
+        <div id="resultsContainer"></div>
+        <div id="videoPlayerContainer">
+            <div id="videoPlayer"></div>
+            <button id="backToResults">Voltar aos resultados</button>
+        </div>
+    </main>
+    <button id="darkModeToggle"><i class="fas fa-moon"></i></button>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
+    <script>
+
+        const searchForm = document.getElementById('searchForm');
+        const searchInput = document.getElementById('searchInput');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const loadingIndicator = document.getElementById('loading');
+        const clearSearchBtn = document.getElementById('clearSearch');
+        const darkModeToggle = document.getElementById('darkModeToggle');
+        const videoPlayerContainer = document.getElementById('videoPlayerContainer');
+        const backToResultsBtn = document.getElementById('backToResults');
+        const historyButton = document.getElementById('historyButton');
+        const logoutButton = document.getElementById('logoutButton');
+        let currentPage = 1;
+        let isViewingVideo = false;
+        let totalPages = 1;
+        let episodesBySeason = {};
+
+        const debounceSearch = _.debounce(() => {
+            currentPage = 1;
+            closeVideoPlayer();
+            searchVideos();
+        }, 300);
+
+        searchForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            debounceSearch();
+        });
+
+        searchInput.addEventListener('input', debounceSearch);
+
+        clearSearchBtn.addEventListener('click', () => {
+            searchInput.value = '';
+            searchInput.focus();
+            resultsContainer.innerHTML = '';
+        });
+
+        darkModeToggle.addEventListener('click', () => {
+            document.body.classList.toggle('dark-mode');
+            const icon = darkModeToggle.querySelector('i');
+            icon.classList.toggle('fa-moon');
+            icon.classList.toggle('fa-sun');
+        });
+
+        historyButton.addEventListener('click', () => {
+            window.location.href = '/history';
+        });
+
+        logoutButton.addEventListener('click', () => {
+            if (confirm('Tem certeza que deseja sair?')) {
+                window.location.href = '/logout';
+            }
+        });
+
+        async function searchVideos() {
+    const query = searchInput.value;
+    if (!query) return;
+
+    showLoading(true);
+
+    try {
+        const response = await fetch(`/search?query=${encodeURIComponent(query)}&page=${currentPage}`);
+        const data = await response.json();
+        if (currentPage === 1) {
+            resultsContainer.innerHTML = '';
+            episodesBySeason = {};
+        }
+        organizeEpisodes(data.videos);
+        displayOrganizedEpisodes();
+        totalPages = data.total_pages;
+    } catch (error) {
+        console.error('Error fetching videos:', error);
+        resultsContainer.innerHTML += '<p>Erro ao buscar vídeos. Por favor, tente novamente.</p>';
+    } finally {
+        showLoading(false);
+    }
+}
+
+function organizeEpisodes(videos) {
+    videos.forEach(video => {
+        const { season, episode } = extractSeasonAndEpisode(video.title);
+        if (season !== null) {
+            if (!episodesBySeason[season]) {
+                episodesBySeason[season] = [];
+            }
+            episodesBySeason[season].push({ ...video, episode });
+        } else {
+            // Handle videos without clear season/episode info
+            if (!episodesBySeason['outros']) {
+                episodesBySeason['outros'] = [];
+            }
+            episodesBySeason['outros'].push(video);
+        }
+    });
+
+    // Sort episodes within each season
+    Object.keys(episodesBySeason).forEach(season => {
+        if (season !== 'outros') {
+            episodesBySeason[season].sort((a, b) => a.episode - b.episode);
+        }
+    });
+}
+
+function extractSeasonAndEpisode(title) {
+    // Regex para extrair temporada e episódio
+    const regex = /(\d+)ª?\s*Temporada.*Episódio\s*(\d+)/i;
+    const match = title.match(regex);
+    
+    if (match) {
+        return {
+            season: parseInt(match[1]),
+            episode: parseInt(match[2])
+        };
+    }
+    
+    return { season: null, episode: null };
+}
+
+function displayOrganizedEpisodes() {
+            const seasons = Object.keys(episodesBySeason).sort((a, b) => {
+                if (a === 'outros') return 1;
+                if (b === 'outros') return -1;
+                return parseInt(a) - parseInt(b);
+            });
+
+            resultsContainer.innerHTML = ''; // Limpa o container antes de adicionar novos resultados
+
+            seasons.forEach(season => {
+                const seasonContainer = document.createElement('div');
+                seasonContainer.className = 'season-container';
+                
+                const seasonTitle = document.createElement('h2');
+                seasonTitle.textContent = season === 'outros' ? 'Outros Vídeos' : `${season}ª Temporada`;
+                seasonContainer.appendChild(seasonTitle);
+
+                const episodeContainer = document.createElement('div');
+                episodeContainer.className = 'episode-container';
+
+                episodesBySeason[season].forEach(video => {
+                    const videoCard = createVideoCard(video);
+                    episodeContainer.appendChild(videoCard);
+                });
+
+                seasonContainer.appendChild(episodeContainer);
+                resultsContainer.appendChild(seasonContainer);
+            });
+        }
+
+        function createVideoCard(video) {
+            const videoCard = document.createElement('div');
+            videoCard.className = 'videoCard';
+            videoCard.innerHTML = `
+                <img src="https://redecanais.tw/${video.cover_image || '/placeholder-image.jpg'}" alt="${video.title}">
+                <div class="content">
+                    <h3>${video.title}</h3>
+                    <button onclick="playVideo('${video.link}', '${video.title}')">Play Video</button>
+                </div>
+            `;
+            return videoCard;
+        }
+
+        function closeVideoPlayer() {
+            videoPlayerContainer.style.display = 'none';
+            resultsContainer.style.display = 'grid';
+            const iframe = document.querySelector('#videoPlayer iframe');
+            if (iframe) {
+                iframe.src = '';
+            }
+            isViewingVideo = false;
+        }
+
+        function playVideo(videoUrl, videoTitle) {
+            const proxyUrl = `/proxy?url=https://redecanais.tw${videoUrl}&title=${encodeURIComponent(videoTitle)}`;
+
+            showLoading(true);
+            resultsContainer.style.display = 'none';
+            videoPlayerContainer.style.display = 'block';
+            isViewingVideo = true;
+
+            fetch(proxyUrl)
+                .then(response => response.json())
+                .then(data => {
+                    const embedUrl = data.embed_url;
+
+                    // Verifica se já existe um iframe e remove
+                    const existingIframe = document.querySelector('#videoPlayer iframe');
+                    if (existingIframe) {
+                        existingIframe.remove();
+                    }
+
+                    // Cria novo iframe
+                    const iframe = document.createElement('iframe');
+                    iframe.src = embedUrl;
+                    iframe.frameBorder = "0";
+                    iframe.allowFullscreen = true;
+                    iframe.allowScript = false;
+
+                    const videoPlayer = document.getElementById("videoPlayer");
+                    videoPlayer.innerHTML = '';
+                    videoPlayer.appendChild(iframe);
+
+                    // Bloquear recarregamento
+                    iframe.onload = function () {
+                        iframe.contentWindow.onbeforeunload = function (event) {
+                            event.preventDefault();
+                            return false; // Bloquear o reload
+                        };
+                    };
+
+                    videoPlayerContainer.scrollIntoView({ behavior: 'smooth' });
+                })
+                .catch(error => {
+                    console.error("Error fetching video embed:", error);
+                    videoPlayerContainer.innerHTML = '<p>Erro ao carregar o vídeo. Por favor, tente novamente.</p>';
+                })
+                .finally(() => showLoading(false));
+        }
+
+        backToResultsBtn.addEventListener('click', () => {
+            closeVideoPlayer();
+            resultsContainer.scrollIntoView({ behavior: 'smooth' });
+        });
+
+        function showLoading(show) {
+            loadingIndicator.style.display = show ? 'block' : 'none';
+        }
+
+        window.addEventListener('scroll', _.throttle(() => {
+            if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500 && !isViewingVideo && currentPage < totalPages) {
+                currentPage++;
+                searchVideos();
+            }
+        }, 200));
+
+        // Inicializar modo escuro baseado na preferência do usuário
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            document.body.classList.add('dark-mode');
+            darkModeToggle.querySelector('i').classList.replace('fa-moon', 'fa-sun');
+        }
+
+        // Listener para mudanças na preferência de cor do sistema
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+            if (e.matches) {
+                document.body.classList.add('dark-mode');
+                darkModeToggle.querySelector('i').classList.replace('fa-moon', 'fa-sun');
+            } else {
+                document.body.classList.remove('dark-mode');
+                darkModeToggle.querySelector('i').classList.replace('fa-sun', 'fa-moon');
+            }
+        });
+    </script>
+
+</body>
+
+</html>
