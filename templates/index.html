@@ -1,6 +1,149 @@
 <html>
 
 <head>
+    
+<script>
+// Flag to track if an iframe has been detected
+let iframeDetected = false;
+let allowedIframeSrc = null;
+
+// Function to validate iframe src
+function isValidIframeSrc(src) {
+    if (!iframeDetected) {
+        console.log('Allowing initial iframe:', src);
+        allowedIframeSrc = src;
+        return true;
+    }
+    
+    // After iframe detection, only allow the initial src
+    const isValid = src === allowedIframeSrc;
+    console.log(`Validating subsequent iframe: ${src}, Valid: ${isValid}`);
+    return isValid;
+}
+
+// Function to sanitize HTML
+function sanitizeHTML(html) {
+    console.log('Sanitizing HTML');
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const iframes = doc.getElementsByTagName('iframe');
+
+    for (let i = iframes.length - 1; i >= 0; i--) {
+        const iframe = iframes[i];
+        if (!isValidIframeSrc(iframe.src)) {
+            console.warn(`Removing invalid iframe: ${iframe.src}`);
+            iframe.parentNode.removeChild(iframe);
+        } else if (!iframeDetected) {
+            console.log('First iframe detected, allowing this iframe');
+            iframeDetected = true;
+        }
+    }
+
+    return doc.body.innerHTML;
+}
+
+// Override innerHTML setter
+const originalInnerHTMLDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+Object.defineProperty(Element.prototype, 'innerHTML', {
+    set: function(value) {
+        console.log('Setting innerHTML');
+        const sanitizedValue = sanitizeHTML(value);
+        originalInnerHTMLDescriptor.set.call(this, sanitizedValue);
+    }
+});
+
+// Override insertAdjacentHTML
+const originalInsertAdjacentHTML = Element.prototype.insertAdjacentHTML;
+Element.prototype.insertAdjacentHTML = function(position, text) {
+    console.log('Inserting adjacent HTML');
+    const sanitizedText = sanitizeHTML(text);
+    originalInsertAdjacentHTML.call(this, position, sanitizedText);
+};
+
+// Observe DOM changes
+const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+        if (mutation.type === 'childList') {
+            mutation.addedNodes.forEach((node) => {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    if (node.tagName.toLowerCase() === 'iframe') {
+                        console.log('iframe added:', node.src);
+                        if (!isValidIframeSrc(node.src)) {
+                            console.warn(`Removing invalid iframe: ${node.src}`);
+                            node.parentNode.removeChild(node);
+                        } else if (!iframeDetected) {
+                            console.log('First iframe detected, allowing this iframe');
+                            iframeDetected = true;
+                        }
+                    } else {
+                        const iframes = node.getElementsByTagName('iframe');
+                        for (let iframe of iframes) {
+                            console.log('iframe found in added node:', iframe.src);
+                            if (!isValidIframeSrc(iframe.src)) {
+                                console.warn(`Removing invalid iframe: ${iframe.src}`);
+                                iframe.parentNode.removeChild(iframe);
+                            } else if (!iframeDetected) {
+                                console.log('First iframe detected, allowing this iframe');
+                                iframeDetected = true;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+});
+
+observer.observe(document.body, { childList: true, subtree: true });
+
+// Prevent creating iframes via document.createElement
+const originalCreateElement = document.createElement;
+document.createElement = function(tagName) {
+    console.log('Creating element:', tagName);
+    const element = originalCreateElement.call(document, tagName);
+    if (tagName.toLowerCase() === 'iframe') {
+        Object.defineProperty(element, 'src', {
+            set: function(value) {
+                console.log('Setting iframe src:', value);
+                if (isValidIframeSrc(value)) {
+                    element.setAttribute('src', value);
+                    if (!iframeDetected) {
+                        console.log('First iframe detected, allowing this iframe');
+                        iframeDetected = true;
+                    }
+                } else {
+                    console.warn('Attempted to set invalid iframe src:', value);
+                }
+            },
+            get: function() {
+                return element.getAttribute('src');
+            }
+        });
+    }
+    return element;
+};
+
+// Block subsequent requests after iframe detection, except for the allowed iframe src
+const originalFetch = window.fetch;
+window.fetch = function(...args) {
+    if (iframeDetected && args[0] !== allowedIframeSrc) {
+        console.warn('Blocking fetch request after iframe detection');
+        return Promise.reject(new Error('Fetch blocked due to security policy'));
+    }
+    return originalFetch.apply(this, args);
+};
+
+const originalXHROpen = XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open = function(...args) {
+    if (iframeDetected && args[1] !== allowedIframeSrc) {
+        console.warn('Blocking XMLHttpRequest after iframe detection');
+        throw new Error('XMLHttpRequest blocked due to security policy');
+    }
+    return originalXHROpen.apply(this, args);
+};
+
+// Log when the script is loaded
+console.log('Security script loaded and active');
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VideoHub - Busca de Vídeos Aprimorada</title>
