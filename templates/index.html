@@ -1,4 +1,6 @@
-<html><head>
+<html>
+
+<head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VideoHub - Busca de Vídeos Aprimorada</title>
@@ -155,12 +157,7 @@
             transform: translateY(-5px);
         }
 
-        #resultsContainer {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 30px;
-            padding: 20px 0;
-        }
+        
 
         .videoCard {
             display: flex;
@@ -287,6 +284,44 @@
             }
         }
 
+        #resultsContainer {
+        display: flex;
+        flex-direction: column;
+        gap: 30px;
+    }
+
+    .season-container {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+    }
+
+    .season-container h2 {
+        color: var(--primary-color);
+        border-bottom: 2px solid var(--accent-color);
+        padding-bottom: 10px;
+        margin-bottom: 20px;
+    }
+
+    .episode-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        gap: 20px;
+    }
+
+
+
+@media (max-width: 768px) {
+    .episode-container {
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        justify-content: center;
+    }
+    
+    .videoCard {
+        width: 100%;
+        max-width: 250px;
+    }
+}
         #darkModeToggle {
             position: fixed;
             bottom: 20px;
@@ -328,7 +363,7 @@
             background-color: var(--card-background);
         }
 
-        
+
         @media (max-width: 768px) {
             h1 {
                 font-size: 2em;
@@ -338,12 +373,15 @@
                 flex-direction: column;
             }
 
-            #searchInput, #searchButton, #clearSearch {
+            #searchInput,
+            #searchButton,
+            #clearSearch {
                 border-radius: var(--border-radius);
                 width: 100%;
             }
 
-            #searchButton, #clearSearch {
+            #searchButton,
+            #clearSearch {
                 margin-top: 10px;
             }
 
@@ -360,6 +398,7 @@
         }
     </style>
 </head>
+
 <body>
     <header>
         <div class="container">
@@ -387,10 +426,10 @@
         </div>
     </main>
     <button id="darkModeToggle"><i class="fas fa-moon"></i></button>
-    
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
     <script>
-        
+
         const searchForm = document.getElementById('searchForm');
         const searchInput = document.getElementById('searchInput');
         const resultsContainer = document.getElementById('resultsContainer');
@@ -404,6 +443,7 @@
         let currentPage = 1;
         let isViewingVideo = false;
         let totalPages = 1;
+        let episodesBySeason = {};
 
         const debounceSearch = _.debounce(() => {
             currentPage = 1;
@@ -442,28 +482,97 @@
         });
 
         async function searchVideos() {
-            const query = searchInput.value;
-            if (!query) return;
+    const query = searchInput.value;
+    if (!query) return;
 
-            showLoading(true);
+    showLoading(true);
 
-            try {
-                const response = await fetch(`/search?query=${encodeURIComponent(query)}&page=${currentPage}`);
-                const data = await response.json();
-                if (currentPage === 1) {
-                    resultsContainer.innerHTML = '';
-                }
-                data.videos.forEach(video => {
-                    const videoCard = createVideoCard(video);
-                    resultsContainer.appendChild(videoCard);
-                });
-                totalPages = data.total_pages;
-            } catch (error) {
-                console.error('Error fetching videos:', error);
-                resultsContainer.innerHTML += '<p>Erro ao buscar vídeos. Por favor, tente novamente.</p>';
-            } finally {
-                showLoading(false);
+    try {
+        const response = await fetch(`/search?query=${encodeURIComponent(query)}&page=${currentPage}`);
+        const data = await response.json();
+        if (currentPage === 1) {
+            resultsContainer.innerHTML = '';
+            episodesBySeason = {};
+        }
+        organizeEpisodes(data.videos);
+        displayOrganizedEpisodes();
+        totalPages = data.total_pages;
+    } catch (error) {
+        console.error('Error fetching videos:', error);
+        resultsContainer.innerHTML += '<p>Erro ao buscar vídeos. Por favor, tente novamente.</p>';
+    } finally {
+        showLoading(false);
+    }
+}
+
+function organizeEpisodes(videos) {
+    videos.forEach(video => {
+        const { season, episode } = extractSeasonAndEpisode(video.title);
+        if (season !== null) {
+            if (!episodesBySeason[season]) {
+                episodesBySeason[season] = [];
             }
+            episodesBySeason[season].push({ ...video, episode });
+        } else {
+            // Handle videos without clear season/episode info
+            if (!episodesBySeason['outros']) {
+                episodesBySeason['outros'] = [];
+            }
+            episodesBySeason['outros'].push(video);
+        }
+    });
+
+    // Sort episodes within each season
+    Object.keys(episodesBySeason).forEach(season => {
+        if (season !== 'outros') {
+            episodesBySeason[season].sort((a, b) => a.episode - b.episode);
+        }
+    });
+}
+
+function extractSeasonAndEpisode(title) {
+    // Regex para extrair temporada e episódio
+    const regex = /(\d+)ª?\s*Temporada.*Episódio\s*(\d+)/i;
+    const match = title.match(regex);
+    
+    if (match) {
+        return {
+            season: parseInt(match[1]),
+            episode: parseInt(match[2])
+        };
+    }
+    
+    return { season: null, episode: null };
+}
+
+function displayOrganizedEpisodes() {
+            const seasons = Object.keys(episodesBySeason).sort((a, b) => {
+                if (a === 'outros') return 1;
+                if (b === 'outros') return -1;
+                return parseInt(a) - parseInt(b);
+            });
+
+            resultsContainer.innerHTML = ''; // Limpa o container antes de adicionar novos resultados
+
+            seasons.forEach(season => {
+                const seasonContainer = document.createElement('div');
+                seasonContainer.className = 'season-container';
+                
+                const seasonTitle = document.createElement('h2');
+                seasonTitle.textContent = season === 'outros' ? 'Resultados:' : `${season}ª Temporada`;
+                seasonContainer.appendChild(seasonTitle);
+
+                const episodeContainer = document.createElement('div');
+                episodeContainer.className = 'episode-container';
+
+                episodesBySeason[season].forEach(video => {
+                    const videoCard = createVideoCard(video);
+                    episodeContainer.appendChild(videoCard);
+                });
+
+                seasonContainer.appendChild(episodeContainer);
+                resultsContainer.appendChild(seasonContainer);
+            });
         }
 
         function createVideoCard(video) {
@@ -490,51 +599,51 @@
         }
 
         function playVideo(videoUrl, videoTitle) {
-    const proxyUrl = `/proxy?url=https://redecanais.tw${videoUrl}&title=${encodeURIComponent(videoTitle)}`;
+            const proxyUrl = `/proxy?url=https://redecanais.tw${videoUrl}&title=${encodeURIComponent(videoTitle)}`;
 
-    showLoading(true);
-    resultsContainer.style.display = 'none';
-    videoPlayerContainer.style.display = 'block';
-    isViewingVideo = true;
+            showLoading(true);
+            resultsContainer.style.display = 'none';
+            videoPlayerContainer.style.display = 'block';
+            isViewingVideo = true;
 
-    fetch(proxyUrl)
-        .then(response => response.json())
-        .then(data => {
-            const embedUrl = data.embed_url;
+            fetch(proxyUrl)
+                .then(response => response.json())
+                .then(data => {
+                    const embedUrl = data.embed_url;
 
-            // Verifica se já existe um iframe e remove
-            const existingIframe = document.querySelector('#videoPlayer iframe');
-            if (existingIframe) {
-                existingIframe.remove();
-            }
+                    // Verifica se já existe um iframe e remove
+                    const existingIframe = document.querySelector('#videoPlayer iframe');
+                    if (existingIframe) {
+                        existingIframe.remove();
+                    }
 
-            // Cria novo iframe
-            const iframe = document.createElement('iframe');
-            iframe.src = embedUrl;
-            iframe.frameBorder = "0";
-            iframe.allowFullscreen = true;
-            iframe.allowScript = false;
+                    // Cria novo iframe
+                    const iframe = document.createElement('iframe');
+                    iframe.src = embedUrl;
+                    iframe.frameBorder = "0";
+                    iframe.allowFullscreen = true;
+                    iframe.allowScript = false;
 
-            const videoPlayer = document.getElementById("videoPlayer");
-            videoPlayer.innerHTML = '';
-            videoPlayer.appendChild(iframe);
+                    const videoPlayer = document.getElementById("videoPlayer");
+                    videoPlayer.innerHTML = '';
+                    videoPlayer.appendChild(iframe);
 
-            // Bloquear recarregamento
-            iframe.onload = function() {
-                iframe.contentWindow.onbeforeunload = function(event) {
-                    event.preventDefault();
-                    return false; // Bloquear o reload
-                };
-            };
+                    // Bloquear recarregamento
+                    iframe.onload = function () {
+                        iframe.contentWindow.onbeforeunload = function (event) {
+                            event.preventDefault();
+                            return false; // Bloquear o reload
+                        };
+                    };
 
-            videoPlayerContainer.scrollIntoView({ behavior: 'smooth' });
-        })
-        .catch(error => {
-            console.error("Error fetching video embed:", error);
-            videoPlayerContainer.innerHTML = '<p>Erro ao carregar o vídeo. Por favor, tente novamente.</p>';
-        })
-        .finally(() => showLoading(false));
-}
+                    videoPlayerContainer.scrollIntoView({ behavior: 'smooth' });
+                })
+                .catch(error => {
+                    console.error("Error fetching video embed:", error);
+                    videoPlayerContainer.innerHTML = '<p>Erro ao carregar o vídeo. Por favor, tente novamente.</p>';
+                })
+                .finally(() => showLoading(false));
+        }
 
         backToResultsBtn.addEventListener('click', () => {
             closeVideoPlayer();
@@ -571,4 +680,5 @@
     </script>
 
 </body>
+
 </html>
