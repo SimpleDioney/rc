@@ -85,11 +85,10 @@ class ViewingHistory(Base):
     __tablename__ = 'viewing_history'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
-    content_type = Column(String, nullable=False)  # 'series' or 'movie'
+    content_type = Column(String, nullable=False)  # 'series' ou 'filmes'
     title = Column(String, nullable=False)
-    cover_image = Column(String)  # New field for cover image URL
-    episodes = Column(JSON)  # For series: {"season": [{"episode": "title", "url": "url", "cover_image": "url"}]}
-    url = Column(String)  # For movies
+    episodes = Column(JSON)  # Para series: {"season": [{"episode": "title", "url": "url"}]}
+    url = Column(String)  # Para filmes
     last_watched = Column(DateTime, default=datetime.now(pytz.timezone('America/Sao_Paulo')))
     user = relationship('User', back_populates='viewing_history')
 
@@ -97,7 +96,7 @@ def is_series(title):
     return bool(re.search(r'temporada|season', title, re.IGNORECASE))
 
 def format_title(title):
-    # Formata o título para o formato desejado
+    # Formata o título para o formato correto
     # Ex: "Breaking Bad 2ª Temporada - 01 – Seven Thirty-Seven -> Breaking Bad - 2ª Temporada - Episódio 01 - Seven Thirty-Seve"
     match = re.search(r'^(.*?)\s*(\d+)\s*ª?\s*Temporada\s*.*?-\s*(\d+)\s*–?\s*(.*)$', title)
     if match:
@@ -152,18 +151,11 @@ def save_to_cache(url, content):
     db_session.close()
     log_activity('cache', f'Cache entry added: {url}')
 
-def save_to_history(video_url, video_title, cover_image=None):
+def save_to_history(video_url, video_title):
     user_id = flask_session.get('user_id')
     if not user_id:
         logger.error("Attempted to save history without user_id in session")
         return
-
-    # Try to extract cover image from the video page if not provided
-    if not cover_image:
-        extracted_cover, matched_title = extract_cover_from_video_page(video_url, video_title)
-        if extracted_cover:
-            cover_image = extracted_cover
-            logger.info(f"Extracted cover image for {video_title}")
 
     db_session = Session()
     try:
@@ -187,7 +179,6 @@ def save_to_history(video_url, video_title, cover_image=None):
                 "episode": episode,
                 "title": video_title,
                 "url": video_url,
-                "cover_image": cover_image,
                 "last_watched": current_time.isoformat()
             }
 
@@ -232,14 +223,12 @@ def save_to_history(video_url, video_title, cover_image=None):
             
             if existing_movie:
                 existing_movie.last_watched = current_time
-                existing_movie.cover_image = cover_image or existing_movie.cover_image
             else:
                 new_movie = ViewingHistory(
                     user_id=user_id,
                     content_type='movie',
                     title=video_title,
                     url=video_url,
-                    cover_image=cover_image,
                     last_watched=current_time,
                     episodes=None
                 )
@@ -282,44 +271,6 @@ def create_super_admin(app):
             db_session.commit()
             print(f"Super Admin criado: {username}")
         db_session.close()
-
-def extract_cover_from_video_page(video_url, expected_title):
-    soup = get_content(video_url)
-    if not soup:
-        logger.error(f"Failed to load video page: {video_url}")
-        return None
-
-    # Try to find the cover image in the video page
-    cover_image = None
-    title_match = None
-    
-    try:
-        for thumbnail in soup.select('div.thumbnail'):
-            caption = thumbnail.select_one('div.caption')
-            if not caption:
-                continue
-                
-            h3 = caption.select_one('h3')
-            if not h3:
-                continue
-                
-            a_tag = h3.select_one('a')
-            if not a_tag:
-                continue
-                
-            page_title = a_tag.text.strip()
-            
-            # Check if this is the thumbnail we're looking for
-            if levenshtein_distance(page_title.lower(), expected_title.lower()) <= 5:
-                img_tag = thumbnail.select_one('img[data-echo]')
-                if img_tag and 'data-echo' in img_tag.attrs:
-                    cover_image = img_tag['data-echo']
-                    title_match = page_title
-                    break
-    except Exception as e:
-        logger.error(f"Error extracting cover from video page: {str(e)}")
-    
-    return cover_image, title_match
 
 def login_required(f):
     @wraps(f)
@@ -826,18 +777,14 @@ def get_history():
         history_data = []
         for item in history:
             if item.content_type == 'series':
-                # For series, use the cover image from the first episode of the first season
-                cover_image = None
                 if item.episodes:
                     first_season = min(item.episodes.keys())
                     if item.episodes[first_season]:
                         first_episode = item.episodes[first_season][0]
-                        cover_image = first_episode.get('cover_image')
                 
                 history_data.append({
                     "content_type": "series",
                     "title": item.title,
-                    "cover_image": cover_image or item.cover_image,  # Fallback to item.cover_image if no episode cover
                     "last_watched": item.last_watched.isoformat(),
                     "seasons": len(item.episodes) if item.episodes else 0,
                     "total_episodes": sum(len(episodes) for episodes in item.episodes.values()) if item.episodes else 0
@@ -847,7 +794,6 @@ def get_history():
                     "content_type": "movie",
                     "title": item.title,
                     "url": item.url,
-                    "cover_image": item.cover_image,
                     "last_watched": item.last_watched.isoformat()
                 })
         
@@ -968,7 +914,6 @@ def debug_history():
 def proxy():
     video_url = request.args.get('url')
     video_title = request.args.get('title', 'Título não disponível')
-    cover_image = request.args.get('cover_image')
     
     if not video_url:
         logger.error(f"Requisição de proxy inválida: url={video_url}")
@@ -983,7 +928,7 @@ def proxy():
     parsed_url = urllib.parse.urlparse(video_embed_url)
     adjusted_url = urllib.parse.urlunparse(parsed_url._replace(netloc="redecanais.tw"))
     
-    save_to_history(video_url, video_title, cover_image)
+    save_to_history(video_url, video_title)
     
     return jsonify({"embed_url": adjusted_url})
 
