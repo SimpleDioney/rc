@@ -496,6 +496,7 @@
                         </span>
                         <h3>${item.title}</h3>
                         ${item.content_type === 'series' ? `
+                            <p><i class="fa-regular fa-eye"></i>Você já assistiu a:</p>
                             <p><i class="fas fa-layer-group"></i> ${item.seasons} temporadas</p>
                             <p><i class="fas fa-list-ol"></i> ${item.total_episodes} episódios</p>
                         ` : ''}
