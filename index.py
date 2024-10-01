@@ -7,7 +7,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
 
 # Database and ORM
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import relationship, sessionmaker
@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 
 # Utilities
 import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 from functools import wraps
 from bs4 import BeautifulSoup
 import pytz
@@ -23,8 +25,6 @@ import urllib.parse
 import re
 import time
 import concurrent.futures
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
 import os
 import json
 import hashlib
@@ -41,6 +41,17 @@ app.secret_key = 'Dioneyyy'
 Base = declarative_base()
 engine = create_engine('sqlite:///cache.db')
 Session = sessionmaker(bind=engine)
+
+# Create a persistent session
+def create_persistent_session():
+    session = requests.Session()
+    retries = Retry(total=5, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retries, pool_connections=100, pool_maxsize=100)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
+persistent_session = create_persistent_session()
 
 # Database models
 class User(Base):
@@ -74,10 +85,47 @@ class ViewingHistory(Base):
     __tablename__ = 'viewing_history'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
-    video_url = Column(String, nullable=False)
-    video_title = Column(String, nullable=False)
-    timestamp = Column(DateTime, default=datetime.now(pytz.timezone('America/Sao_Paulo')))
+    content_type = Column(String, nullable=False)  # 'series' or 'movie'
+    title = Column(String, nullable=False)
+    cover_image = Column(String)  # New field for cover image URL
+    episodes = Column(JSON)  # For series: {"season": [{"episode": "title", "url": "url", "cover_image": "url"}]}
+    url = Column(String)  # For movies
+    last_watched = Column(DateTime, default=datetime.now(pytz.timezone('America/Sao_Paulo')))
     user = relationship('User', back_populates='viewing_history')
+
+def is_series(title):
+    return bool(re.search(r'temporada|season', title, re.IGNORECASE))
+
+def format_title(title):
+    # Formata o título para o formato desejado
+    # Ex: "Breaking Bad 2ª Temporada - 01 – Seven Thirty-Seven -> Breaking Bad - 2ª Temporada - Episódio 01 - Seven Thirty-Seve"
+    match = re.search(r'^(.*?)\s*(\d+)\s*ª?\s*Temporada\s*.*?-\s*(\d+)\s*–?\s*(.*)$', title)
+    if match:
+        show_name = match.group(1).strip()
+        season = match.group(2).strip()
+        episode = match.group(3).strip()
+        episode_name = match.group(4).strip()
+
+        # Retorna o título formatado
+        return f"{show_name} - {season}ª Temporada (Legendado) - Episódio {episode.zfill(2)} - {episode_name}"
+    return title  # Retorna o título original se não conseguir formatar
+
+def extract_season_episode(title):
+    # Formata o título
+    formatted_title = format_title(title)
+    
+    # Regex atualizada para suportar diversos formatos
+    match = re.search(r'(\d+)\s*ª?\s*Temporada.*?[-–]?\s*Episódio\s*(\d+)|'  # Formatos com "Temporada"
+                       r'(\d+)\s*ª?\s*Episódio\s*(\d+)|'  # Formatos com "Episódio"
+                       r'(\d+)\s*ª?\s*T\s*[-–]?\s*(\d+)',  # Formatos abreviados
+                       formatted_title)
+    
+    if match:
+        season = int(match.group(1) or match.group(3) or match.group(5) or 0)
+        episode = int(match.group(2) or match.group(4) or 0)
+        return season, episode
+    
+    return 0, 0  # Retorna 0 caso não consiga encontrar
 
 def get_cache_key(url):
     return hashlib.md5(url.encode()).hexdigest()
@@ -103,6 +151,107 @@ def save_to_cache(url, content):
     db_session.commit()
     db_session.close()
     log_activity('cache', f'Cache entry added: {url}')
+
+def save_to_history(video_url, video_title, cover_image=None):
+    user_id = flask_session.get('user_id')
+    if not user_id:
+        logger.error("Attempted to save history without user_id in session")
+        return
+
+    # Try to extract cover image from the video page if not provided
+    if not cover_image:
+        extracted_cover, matched_title = extract_cover_from_video_page(video_url, video_title)
+        if extracted_cover:
+            cover_image = extracted_cover
+            logger.info(f"Extracted cover image for {video_title}")
+
+    db_session = Session()
+    try:
+        brasil_tz = pytz.timezone('America/Sao_Paulo')
+        current_time = datetime.now(brasil_tz)
+
+        if is_series(video_title):
+            season, episode = extract_season_episode(video_title)
+            if season is None or episode is None:
+                logger.error(f"Could not extract season/episode from title: {video_title}")
+                return
+
+            series_base_title = re.sub(r'\s*-?\s*(\d+)ª?\s*Temporada.*', '', video_title).strip()
+            
+            existing_entry = db_session.query(ViewingHistory)\
+                .filter_by(user_id=user_id, content_type='series', title=series_base_title)\
+                .first()
+                
+            season_str = str(season)
+            new_episode_data = {
+                "episode": episode,
+                "title": video_title,
+                "url": video_url,
+                "cover_image": cover_image,
+                "last_watched": current_time.isoformat()
+            }
+
+            if existing_entry:
+                if not existing_entry.episodes:
+                    existing_entry.episodes = {}
+                
+                if season_str not in existing_entry.episodes:
+                    existing_entry.episodes[season_str] = []
+                
+                episode_found = False
+                for i, ep in enumerate(existing_entry.episodes[season_str]):
+                    if isinstance(ep, dict) and ep.get("episode") == episode:
+                        existing_entry.episodes[season_str][i] = new_episode_data
+                        episode_found = True
+                        break
+                
+                if not episode_found:
+                    existing_entry.episodes[season_str].append(new_episode_data)
+                
+                existing_entry.last_watched = current_time
+                
+                db_session.query(ViewingHistory)\
+                    .filter_by(id=existing_entry.id)\
+                    .update({
+                        ViewingHistory.episodes: existing_entry.episodes,
+                        ViewingHistory.last_watched: current_time,
+                    })
+            else:
+                new_entry = ViewingHistory(
+                    user_id=user_id,
+                    content_type='series',
+                    title=series_base_title,
+                    episodes={season_str: [new_episode_data]},
+                    last_watched=current_time
+                )
+                db_session.add(new_entry)
+        else:
+            existing_movie = db_session.query(ViewingHistory)\
+                .filter_by(user_id=user_id, content_type='movie', url=video_url)\
+                .first()
+            
+            if existing_movie:
+                existing_movie.last_watched = current_time
+                existing_movie.cover_image = cover_image or existing_movie.cover_image
+            else:
+                new_movie = ViewingHistory(
+                    user_id=user_id,
+                    content_type='movie',
+                    title=video_title,
+                    url=video_url,
+                    cover_image=cover_image,
+                    last_watched=current_time,
+                    episodes=None
+                )
+                db_session.add(new_movie)
+
+        db_session.commit()
+        logger.info(f"History updated successfully: user_id={user_id}, title={video_title}")
+    except SQLAlchemyError as e:
+        db_session.rollback()
+        logger.error(f"Database error while saving history: {str(e)}")
+    finally:
+        db_session.close()
 
 Base.metadata.create_all(engine)
 
@@ -133,6 +282,44 @@ def create_super_admin(app):
             db_session.commit()
             print(f"Super Admin criado: {username}")
         db_session.close()
+
+def extract_cover_from_video_page(video_url, expected_title):
+    soup = get_content(video_url)
+    if not soup:
+        logger.error(f"Failed to load video page: {video_url}")
+        return None
+
+    # Try to find the cover image in the video page
+    cover_image = None
+    title_match = None
+    
+    try:
+        for thumbnail in soup.select('div.thumbnail'):
+            caption = thumbnail.select_one('div.caption')
+            if not caption:
+                continue
+                
+            h3 = caption.select_one('h3')
+            if not h3:
+                continue
+                
+            a_tag = h3.select_one('a')
+            if not a_tag:
+                continue
+                
+            page_title = a_tag.text.strip()
+            
+            # Check if this is the thumbnail we're looking for
+            if levenshtein_distance(page_title.lower(), expected_title.lower()) <= 5:
+                img_tag = thumbnail.select_one('img[data-echo]')
+                if img_tag and 'data-echo' in img_tag.attrs:
+                    cover_image = img_tag['data-echo']
+                    title_match = page_title
+                    break
+    except Exception as e:
+        logger.error(f"Error extracting cover from video page: {str(e)}")
+    
+    return cover_image, title_match
 
 def login_required(f):
     @wraps(f)
@@ -248,12 +435,6 @@ def prefetch_pages(urls):
         executor.map(fetch_page, urls)
 
 def sort_videos(videos):
-    def extract_season_episode(title):
-        match = re.search(r'(\d+)ª\s*Temporada\s*-\s*Episódio\s*(\d+)', title)
-        if match:
-            return int(match.group(1)), int(match.group(2))
-        return 0, 0
-
     return sorted(videos, key=lambda x: extract_season_episode(x['title']))
 
 # Routes
@@ -439,6 +620,7 @@ def remove_admin():
         return jsonify({"error": str(e)}), 500
     finally:
         db_session.close()
+
 
 @app.route('/admin/list', methods=['GET'])
 @requires_auth
@@ -638,16 +820,36 @@ def get_history():
     try:
         history = db_session.query(ViewingHistory)\
             .filter_by(user_id=user_id)\
-            .order_by(ViewingHistory.timestamp.desc())\
+            .order_by(ViewingHistory.last_watched.desc())\
             .all()
         
-        history_data = [
-            {
-                "video_title": item.video_title,
-                "video_url": item.video_url,
-                "timestamp": item.timestamp.isoformat()
-            } for item in history
-        ]
+        history_data = []
+        for item in history:
+            if item.content_type == 'series':
+                # For series, use the cover image from the first episode of the first season
+                cover_image = None
+                if item.episodes:
+                    first_season = min(item.episodes.keys())
+                    if item.episodes[first_season]:
+                        first_episode = item.episodes[first_season][0]
+                        cover_image = first_episode.get('cover_image')
+                
+                history_data.append({
+                    "content_type": "series",
+                    "title": item.title,
+                    "cover_image": cover_image or item.cover_image,  # Fallback to item.cover_image if no episode cover
+                    "last_watched": item.last_watched.isoformat(),
+                    "seasons": len(item.episodes) if item.episodes else 0,
+                    "total_episodes": sum(len(episodes) for episodes in item.episodes.values()) if item.episodes else 0
+                })
+            else:
+                history_data.append({
+                    "content_type": "movie",
+                    "title": item.title,
+                    "url": item.url,
+                    "cover_image": item.cover_image,
+                    "last_watched": item.last_watched.isoformat()
+                })
         
         return jsonify(history_data)
     except SQLAlchemyError as e:
@@ -655,47 +857,118 @@ def get_history():
         return jsonify({"error": "Erro ao buscar o histórico"}), 500
     finally:
         db_session.close()
-
-def save_to_history(video_url, video_title):
+    
+@app.route('/get_series_details')
+@login_required
+def get_series_details():
     user_id = flask_session.get('user_id')
-    if not user_id:
-        logger.error("Tentativa de salvar histórico sem user_id na sessão")
-        return
+    series_title = request.args.get('title')
+    
+    if not user_id or not series_title:
+        return jsonify({"error": "Parâmetros inválidos"}), 400
 
     db_session = Session()
     try:
-        # Defina o fuso horário para São Paulo
-        brasil_tz = pytz.timezone('America/Sao_Paulo')
-        current_time = datetime.now(brasil_tz)
+        series = db_session.query(ViewingHistory)\
+            .filter_by(user_id=user_id, content_type='series', title=series_title)\
+            .first()
+        
+        if not series or not series.episodes:
+            return jsonify({"error": "Série não encontrada ou sem episódios"}), 404
 
-        # Verificar se uma entrada com o mesmo título já existe
-        existing_entry = db_session.query(ViewingHistory).filter_by(
-            user_id=user_id, 
-            video_title=video_title
-        ).first()
+        episodes_data = []
+        for season, episodes in series.episodes.items():
+            for episode in episodes:
+                episodes_data.append({
+                    "season": int(season),
+                    "episode": episode["episode"],
+                    "title": episode["title"],
+                    "url": episode["url"],
+                    "last_watched": episode.get("last_watched", 
+                                               series.last_watched.isoformat() 
+                                               if series.last_watched else None)
+                })
 
-        if existing_entry:
-            # Atualizar o timestamp da entrada existente
-            existing_entry.timestamp = current_time
-            logger.info(f"Histórico atualizado: user_id={user_id}, url={video_url}, title={video_title}")
-        else:
-            # Criar uma nova entrada se não existir
-            new_history = ViewingHistory(user_id=user_id, video_url=video_url, video_title=video_title, timestamp=current_time)
-            db_session.add(new_history)
-            logger.info(f"Novo histórico salvo: user_id={user_id}, url={video_url}, title={video_title}")
-
-        db_session.commit()
+        response_data = {
+            "title": series.title,
+            "last_watched": series.last_watched.isoformat() if series.last_watched else None,
+            "episodes": sorted(episodes_data, 
+                              key=lambda x: (x["season"], x["episode"])),
+            "total_episodes": len(episodes_data),
+            "total_seasons": len(series.episodes)
+        }
+        
+        return jsonify(response_data)
     except SQLAlchemyError as e:
-        db_session.rollback()
-        logger.error(f"Erro ao salvar no banco de dados: {str(e)}")
+        logger.error(f"Erro ao buscar detalhes da série: {str(e)}")
+        return jsonify({"error": "Erro ao buscar detalhes da série"}), 500
     finally:
         db_session.close()
+        
+@app.route('/debug_history')
+@login_required
+def debug_history():
+    user_id = flask_session.get('user_id')
+    if not user_id:
+        return jsonify({"error": "Usuário não autenticado"}), 401
 
+    db_session = Session()
+    try:
+        history_entries = db_session.query(ViewingHistory)\
+            .filter_by(user_id=user_id)\
+            .all()
+        
+        debug_data = []
+        for entry in history_entries:
+            entry_data = {
+                "id": entry.id,
+                "content_type": entry.content_type,
+                "title": entry.title,
+                "last_watched": entry.last_watched.isoformat() if entry.last_watched else None,
+                "raw_episodes": entry.episodes,
+                "_raw_episodes_type": str(type(entry.episodes)),  # Debug: Check actual type
+                "_raw_episodes_repr": repr(entry.episodes)  # Debug: Full string representation
+            }
+            
+            if entry.content_type == 'series':
+                if not isinstance(entry.episodes, dict):
+                    entry_data["_error"] = f"Episodes is not a dictionary: {type(entry.episodes)}"
+                    continue
+                
+                # Detailed episode information
+                detailed_episodes = {}
+                total_episodes = 0
+                for season, episodes in entry.episodes.items():
+                    if not isinstance(episodes, list):
+                        entry_data[f"_error_season_{season}"] = f"Season episodes is not a list: {type(episodes)}"
+                        continue
+                    
+                    detailed_episodes[season] = {
+                        "count": len(episodes),
+                        "episode_numbers": [ep.get("episode") for ep in episodes if isinstance(ep, dict)],
+                        "episode_titles": [ep.get("title") for ep in episodes if isinstance(ep, dict)]
+                    }
+                    total_episodes += len(episodes)
+                
+                entry_data["detailed_episodes"] = detailed_episodes
+                entry_data["total_episodes"] = total_episodes
+                entry_data["season_counts"] = {season: len(episodes) for season, episodes in entry.episodes.items()}
+            
+            debug_data.append(entry_data)
+        
+        return jsonify(debug_data)
+    except SQLAlchemyError as e:
+        logger.error(f"Error in debug_history: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db_session.close()
+        
 @app.route('/proxy')
 @login_required
 def proxy():
     video_url = request.args.get('url')
     video_title = request.args.get('title', 'Título não disponível')
+    cover_image = request.args.get('cover_image')
     
     if not video_url:
         logger.error(f"Requisição de proxy inválida: url={video_url}")
@@ -707,12 +980,10 @@ def proxy():
         logger.error(f"Não foi possível obter o vídeo embed para: {video_url}")
         return jsonify({"error": "Não foi possível obter o vídeo embed"}), 500
     
-    # Ajuste na URL do vídeo embed
     parsed_url = urllib.parse.urlparse(video_embed_url)
     adjusted_url = urllib.parse.urlunparse(parsed_url._replace(netloc="redecanais.tw"))
     
-    # Use the updated save_to_history function
-    save_to_history(video_url, video_title)
+    save_to_history(video_url, video_title, cover_image)
     
     return jsonify({"embed_url": adjusted_url})
 
