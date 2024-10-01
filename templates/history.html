@@ -495,7 +495,10 @@
                             ${item.content_type === 'series' ? '<i class="fas fa-tv"></i> Série' : '<i class="fas fa-film"></i> Filme'}
                         </span>
                         <h3>${item.title}</h3>
-                        ${item.content_type === 'series' ? `<p><i class="fas fa-layer-group"></i> ${item.seasons} temporadas</p>` : ''}
+                        ${item.content_type === 'series' ? `
+                            <p><i class="fas fa-layer-group"></i> ${item.seasons} temporadas</p>
+                            <p><i class="fas fa-list-ol"></i> ${item.total_episodes} episódios</p>
+                        ` : ''}
                         <p class="timestamp"><i class="far fa-clock"></i> Último assistido: ${formatDate(item.last_watched)}</p>
                     </div>
                 </div>
