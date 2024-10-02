@@ -7,7 +7,6 @@ requests==2.31.0
 beautifulsoup4==4.12.2
 urllib3==1.26.16
 concurrent-log-handler==0.9.24
-secrets==1.0.1
 retry==0.9.2
 timeloop==1.0.2
 python-dotenv==1.0.0
