@@ -7,10 +7,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
 
 # Database and ORM
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON, Float
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker
-from sqlalchemy.dialects.postgresql import JSONB  # Para suporte a JSON no PostgreSQL
+from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean
+from sqlalchemy.orm import relationship
 from datetime import datetime, timedelta
 
 # Utilities
