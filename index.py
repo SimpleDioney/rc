@@ -7,9 +7,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
 
 # Database and ORM
-from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean
-from sqlalchemy.orm import relationship
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime, timedelta
 
 # Utilities
@@ -38,10 +39,8 @@ logger = logging.getLogger(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 app.secret_key = 'Dioneyyy'
 Base = declarative_base()
-engine = create_engine(DATABASE_URL)
+engine = create_engine('sqlite:///cache.db')
 Session = sessionmaker(bind=engine)
-
-DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Create a persistent session
 def create_persistent_session():
@@ -86,11 +85,10 @@ class ViewingHistory(Base):
     __tablename__ = 'viewing_history'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
-    content_type = Column(String, nullable=False)
+    content_type = Column(String, nullable=False)  # 'series' ou 'filmes'
     title = Column(String, nullable=False)
-    episodes = Column(JSONB)  # Mudado de JSON para JSONB
-    url = Column(String)
-    progress = Column(Float, default=0)
+    episodes = Column(JSON)  # Para series: {"season": [{"episode": "title", "url": "url"}]}
+    url = Column(String)  # Para filmes
     last_watched = Column(DateTime, default=datetime.now(pytz.timezone('America/Sao_Paulo')))
     user = relationship('User', back_populates='viewing_history')
 
@@ -940,4 +938,4 @@ def proxy():
 
 if __name__ == "__main__":
     create_super_admin(app)
-    app.run()
+    app.run(debug=True)
