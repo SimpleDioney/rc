@@ -938,4 +938,4 @@ def proxy():
 
 if __name__ == "__main__":
     create_super_admin(app)
-    app.run(debug=True)
+    app.run()
