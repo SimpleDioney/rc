@@ -26,7 +26,6 @@ import re
 import time
 import concurrent.futures
 import os
-from dotenv import load_dotenv
 import json
 import hashlib
 from io import StringIO
@@ -42,8 +41,6 @@ app.secret_key = 'Dioneyyy'
 Base = declarative_base()
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-
-load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
