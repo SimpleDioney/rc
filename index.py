@@ -7,10 +7,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
 
 # Database and ORM
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON, Float
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy.dialects.postgresql import JSONB  # Para suporte a JSON no PostgreSQL
 from datetime import datetime, timedelta
 
 # Utilities
@@ -26,6 +26,7 @@ import re
 import time
 import concurrent.futures
 import os
+from dotenv import load_dotenv
 import json
 import hashlib
 from io import StringIO
@@ -39,8 +40,12 @@ logger = logging.getLogger(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 app.secret_key = 'Dioneyyy'
 Base = declarative_base()
-engine = create_engine('sqlite:///cache.db')
+engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
+
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Create a persistent session
 def create_persistent_session():
@@ -85,10 +90,11 @@ class ViewingHistory(Base):
     __tablename__ = 'viewing_history'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
-    content_type = Column(String, nullable=False)  # 'series' ou 'filmes'
+    content_type = Column(String, nullable=False)
     title = Column(String, nullable=False)
-    episodes = Column(JSON)  # Para series: {"season": [{"episode": "title", "url": "url"}]}
-    url = Column(String)  # Para filmes
+    episodes = Column(JSONB)  # Mudado de JSON para JSONB
+    url = Column(String)
+    progress = Column(Float, default=0)
     last_watched = Column(DateTime, default=datetime.now(pytz.timezone('America/Sao_Paulo')))
     user = relationship('User', back_populates='viewing_history')
 
