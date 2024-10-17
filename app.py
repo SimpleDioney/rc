@@ -5,7 +5,6 @@ from flask_cors import CORS
 # Security and authentication
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
-from dns import resolver
 
 # Database and ORM
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON
@@ -33,11 +32,6 @@ from io import StringIO
 import csv
 import logging
 
-
-from requests.exceptions import ProxyError, ConnectionError
-from urllib3.exceptions import MaxRetryError
-
-
 app = Flask(__name__)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
 logging.basicConfig(level=logging.DEBUG)
@@ -47,11 +41,6 @@ app.secret_key = 'Dioneyyy'
 Base = declarative_base()
 engine = create_engine('sqlite:///cache.db')
 Session = sessionmaker(bind=engine)
-
-proxies = {
-    'http': 'http://138.219.223.166:5678',
-    'https': 'http://138.219.223.166:5678'
-}
 
 # Create a persistent session
 def create_persistent_session():
@@ -326,45 +315,34 @@ session = create_session()
 
 # Scraper
 
-PROXY = {
-    'http': 'http://143.107.199.248:8080',
-    'https': 'http://143.107.199.248:8080'
-}
-
-def get_content(url, timeout=10, use_proxy=True):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://redecanais.tw',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Cache-Control': 'max-age=0',
-    }
-
+def get_content(url, timeout=5):
     cached_content = get_cached_content(url)
     if cached_content:
-        logger.info(f"Usando cache para {url}")
+        print(f"Usando cache para {url}")
         return BeautifulSoup(cached_content, "html.parser")
 
-    proxies = PROXY if use_proxy else None
-
+    headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Referer': 'https://redecanais.tw',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Cache-Control': 'max-age=0',
+}
+    start_time = time.time()
     try:
-        response = requests.get(url, headers=headers, proxies=proxies, timeout=timeout)
+        response = session.get(url, headers=headers, timeout=timeout)
         response.raise_for_status()
         content = response.text
         save_to_cache(url, content)
-        return BeautifulSoup(content, "html.parser")
-    except (ProxyError, ConnectionError, MaxRetryError) as e:
-        logger.error(f"Erro de proxy ao acessar {url}: {e}")
-        if use_proxy:
-            logger.info("Tentando novamente sem proxy...")
-            return get_content(url, timeout, use_proxy=False)
-        else:
-            return None
     except requests.RequestException as e:
-        logger.error(f"Erro ao fazer a requisição para {url}: {e}")
+        print(f"Erro ao fazer a requisição para {url}: {e}")
         return None
+    end_time = time.time()
+    print(f"Requisição para {url} levou {end_time - start_time:.2f} segundos.")
+    return BeautifulSoup(content, "html.parser")
+
 
 def get_video_options(soup):
     options = []
@@ -400,12 +378,13 @@ def get_video_embed(url):
     iframe = soup.select_one('iframe[name="Player"]')
     return iframe['src'] if iframe and 'src' in iframe.attrs else None
 
-
 def fetch_page(url):
     soup = get_content(url)
     if soup:
         options = get_video_options(soup)
-        return [option for option in options if "Lista de Episódios" not in option['title']]
+        # Filtra os resultados com "Lista de Episódios" no título
+        filtered_options = [option for option in options if "Lista de Episódios" not in option['title']]
+        return filtered_options
     return []
 
 def prefetch_pages(urls):
@@ -732,22 +711,28 @@ def delete_user(user_id):
 @login_required
 def search_videos():
     search_term = request.args.get('query')
-    page = request.args.get('page', 1, type=int)
+    page = request.args.get('page', 1, type=int)  # Página atual (padrão 1)
 
     if not search_term:
         return jsonify({"error": "Query parameter is required"}), 400
     
+    # Construir a URL base com o termo de pesquisa e página atual
     if page == 1:
         base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/"
     else:
         base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/page-{page}/"
 
+    # Fazer o scrape da página atual
     soup = get_content(base_url)
     if not soup:
         return jsonify({"error": "Erro ao carregar a página inicial."}), 500
 
     total_pages = get_total_pages(soup)
-    options = get_video_options(soup)
+    
+    # Buscar vídeos na página atual
+    options = fetch_page(base_url)
+
+    # Ordenar os vídeos
     sorted_options = sort_videos(options)
 
     return jsonify({
@@ -765,17 +750,12 @@ def get_embed():
         logger.error("URL ou título do vídeo não fornecidos")
         return jsonify({"error": "URL e título do vídeo são obrigatórios."}), 400
 
-    soup = get_content(video_url)
-    if not soup:
-        return jsonify({"error": "Não foi possível acessar a página do vídeo."}), 500
-
-    iframe = soup.select_one('iframe[name="Player"]')
-    if iframe and 'src' in iframe.attrs:
-        embed_url = iframe['src']
-    else:
+    embed_url = get_video_embed(video_url)
+    if not embed_url:
         logger.error(f"Não foi possível encontrar o embed para a URL: {video_url}")
         return jsonify({"error": "Não foi possível encontrar o embed do vídeo."}), 500
 
+    # Use the updated save_to_history function
     save_to_history(video_url, video_title)
 
     return jsonify({"embed_url": embed_url})
@@ -958,7 +938,8 @@ def proxy():
     
     return jsonify({"embed_url": adjusted_url})
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+
     create_super_admin(app)
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, ssl_context='adhoc')
+    app.run(host='0.0.0.0', ssl_context='adhoc', port=port)
