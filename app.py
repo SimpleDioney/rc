@@ -5,6 +5,7 @@ from flask_cors import CORS
 # Security and authentication
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
+from dns import resolver
 
 # Database and ORM
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON
@@ -41,6 +42,26 @@ app.secret_key = 'Dioneyyy'
 Base = declarative_base()
 engine = create_engine('sqlite:///cache.db')
 Session = sessionmaker(bind=engine)
+
+def set_cloudflare_dns():
+    # IPs dos servidores DNS da Cloudflare
+    cloudflare_dns = ['1.1.1.1']
+    
+    # Configurar o resolver para usar o DNS da Cloudflare
+    custom_resolver = resolver.Resolver()
+    custom_resolver.nameservers = cloudflare_dns
+    
+    # Função para resolver domínios usando o DNS da Cloudflare
+    def cloudflare_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        try:
+            # Resolver o domínio usando o DNS da Cloudflare
+            answer = custom_resolver.resolve(host, 'A')
+            return [(family, type, proto, '', (str(answer[0]), port)) for _ in answer]
+        except resolver.NXDOMAIN:
+            return []
+    
+    # Substituir a função padrão de resolução de DNS
+    socket.getaddrinfo = cloudflare_getaddrinfo
 
 # Create a persistent session
 def create_persistent_session():
@@ -317,28 +338,29 @@ session = create_session()
 
 def get_content(url, timeout=5):
     cached_content = get_cached_content(url)
+    set_cloudflare_dns()
     if cached_content:
         print(f"Usando cache para {url}")
         return BeautifulSoup(cached_content, "html.parser")
 
     headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Referer': 'https://redecanais.tw',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Cache-Control': 'max-age=0',
-}
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://redecanais.tw',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+    }
     start_time = time.time()
     try:
-        response = session.get(url, headers=headers, timeout=timeout)
+        response = requests.get(url, headers=headers, timeout=timeout)
         response.raise_for_status()
-        content = response.text
-        save_to_cache(url, content)
+        return response.text
     except requests.RequestException as e:
         print(f"Erro ao fazer a requisição para {url}: {e}")
         return None
+        
     end_time = time.time()
     print(f"Requisição para {url} levou {end_time - start_time:.2f} segundos.")
     return BeautifulSoup(content, "html.parser")
