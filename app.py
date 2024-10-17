@@ -33,6 +33,11 @@ from io import StringIO
 import csv
 import logging
 
+
+from requests.exceptions import ProxyError, ConnectionError
+from urllib3.exceptions import MaxRetryError
+
+
 app = Flask(__name__)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
 logging.basicConfig(level=logging.DEBUG)
@@ -299,11 +304,6 @@ def authenticate():
         'Autenticação necessária', 401,
         {'WWW-Authenticate': 'Basic realm="Login necessário"'})
 
-PROXY = {
-    'http': 'http://143.107.199.248:8080',
-    'https': 'http://143.107.199.248:8080'
-}
-
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -326,12 +326,12 @@ session = create_session()
 
 # Scraper
 
-def get_content(url, timeout=5):
-    cached_content = get_cached_content(url)
-    if cached_content:
-        print(f"Usando cache para {url}")
-        return BeautifulSoup(cached_content, "html.parser")
+PROXY = {
+    'http': 'http://143.107.199.248:8080',
+    'https': 'http://143.107.199.248:8080'
+}
 
+def get_content(url, timeout=10, use_proxy=True):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -342,24 +342,29 @@ def get_content(url, timeout=5):
         'Cache-Control': 'max-age=0',
     }
 
-    proxies = {
-        'http': 'http://143.107.199.248:8080',
-        'https': 'http://143.107.199.248:8080'
-    }
+    cached_content = get_cached_content(url)
+    if cached_content:
+        logger.info(f"Usando cache para {url}")
+        return BeautifulSoup(cached_content, "html.parser")
 
-    start_time = time.time()
+    proxies = PROXY if use_proxy else None
+
     try:
         response = requests.get(url, headers=headers, proxies=proxies, timeout=timeout)
         response.raise_for_status()
         content = response.text
         save_to_cache(url, content)
         return BeautifulSoup(content, "html.parser")
+    except (ProxyError, ConnectionError, MaxRetryError) as e:
+        logger.error(f"Erro de proxy ao acessar {url}: {e}")
+        if use_proxy:
+            logger.info("Tentando novamente sem proxy...")
+            return get_content(url, timeout, use_proxy=False)
+        else:
+            return None
     except requests.RequestException as e:
-        print(f"Erro ao fazer a requisição para {url}: {e}")
+        logger.error(f"Erro ao fazer a requisição para {url}: {e}")
         return None
-    finally:
-        end_time = time.time()
-        print(f"Requisição para {url} levou {end_time - start_time:.2f} segundos.")
 
 def get_video_options(soup):
     options = []
