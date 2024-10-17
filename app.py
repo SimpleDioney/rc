@@ -6,7 +6,6 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
 from dns import resolver
-import socket
 
 # Database and ORM
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON
@@ -44,23 +43,10 @@ Base = declarative_base()
 engine = create_engine('sqlite:///cache.db')
 Session = sessionmaker(bind=engine)
 
-def set_cloudflare_dns():
-    cloudflare_dns = ['1.1.1.1', '1.0.0.1', '2606:4700:4700::1111', '2606:4700:4700::1001']
-    custom_resolver = resolver.Resolver()
-    custom_resolver.nameservers = cloudflare_dns
-    
-    def cloudflare_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        try:
-            addrlist = []
-            for res in custom_resolver.resolve(host, 'A'):
-                addrlist.append((socket.AF_INET, type, proto, '', (str(res), port)))
-            for res in custom_resolver.resolve(host, 'AAAA'):
-                addrlist.append((socket.AF_INET6, type, proto, '', (str(res), port)))
-            return addrlist
-        except resolver.NXDOMAIN:
-            return []
-    
-    socket.getaddrinfo = cloudflare_getaddrinfo
+proxies = {
+    'http': 'http://143.107.199.248:8080',
+    'https': 'http://143.107.199.248:8080'
+}
 
 # Create a persistent session
 def create_persistent_session():
@@ -313,6 +299,11 @@ def authenticate():
         'Autenticação necessária', 401,
         {'WWW-Authenticate': 'Basic realm="Login necessário"'})
 
+PROXY = {
+    'http': 'http://143.107.199.248:8080',
+    'https': 'http://143.107.199.248:8080'
+}
+
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -335,15 +326,14 @@ session = create_session()
 
 # Scraper
 
-def get_content(url, timeout=10):
+def get_content(url, timeout=5):
     cached_content = get_cached_content(url)
-    set_cloudflare_dns()
     if cached_content:
         print(f"Usando cache para {url}")
         return BeautifulSoup(cached_content, "html.parser")
 
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Encoding': 'gzip, deflate, br',
         'Referer': 'https://redecanais.tw',
@@ -351,20 +341,26 @@ def get_content(url, timeout=10):
         'Upgrade-Insecure-Requests': '1',
         'Cache-Control': 'max-age=0',
     }
-    
-    retries = Retry(total=5, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
-    with requests.Session() as session:
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        try:
-            response = session.get(url, headers=headers, timeout=timeout)
-            response.raise_for_status()
-            content = response.text
-            save_to_cache(url, content)
-            return BeautifulSoup(content, "html.parser")
-        except requests.RequestException as e:
-            print(f"Erro ao fazer a requisição para {url}: {e}")
-            return None
-            
+
+    proxies = {
+        'http': 'http://143.107.199.248:8080',
+        'https': 'http://143.107.199.248:8080'
+    }
+
+    start_time = time.time()
+    try:
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=timeout)
+        response.raise_for_status()
+        content = response.text
+        save_to_cache(url, content)
+        return BeautifulSoup(content, "html.parser")
+    except requests.RequestException as e:
+        print(f"Erro ao fazer a requisição para {url}: {e}")
+        return None
+    finally:
+        end_time = time.time()
+        print(f"Requisição para {url} levou {end_time - start_time:.2f} segundos.")
+
 def get_video_options(soup):
     options = []
     for thumbnail in soup.select('div.thumbnail'):
@@ -731,7 +727,6 @@ def delete_user(user_id):
 @app.route('/search', methods=['GET'])
 @login_required
 def search_videos():
-    set_cloudflare_dns()
     search_term = request.args.get('query')
     page = request.args.get('page', 1, type=int)  # Página atual (padrão 1)
 
@@ -766,7 +761,6 @@ def search_videos():
 @app.route('/embed', methods=['GET'])
 @login_required
 def get_embed():
-    set_cloudflare_dns()
     video_url = request.args.get('url')
     video_title = request.args.get('title')
     if not video_url or not video_title:
@@ -941,7 +935,6 @@ def debug_history():
 @app.route('/proxy')
 @login_required
 def proxy():
-    set_cloudflare_dns()
     video_url = request.args.get('url')
     video_title = request.args.get('title', 'Título não disponível')
     
