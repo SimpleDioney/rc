@@ -6,6 +6,7 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
 from dns import resolver
+import socket
 
 # Database and ORM
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON
