@@ -400,13 +400,12 @@ def get_video_embed(url):
     iframe = soup.select_one('iframe[name="Player"]')
     return iframe['src'] if iframe and 'src' in iframe.attrs else None
 
+
 def fetch_page(url):
     soup = get_content(url)
     if soup:
         options = get_video_options(soup)
-        # Filtra os resultados com "Lista de Episódios" no título
-        filtered_options = [option for option in options if "Lista de Episódios" not in option['title']]
-        return filtered_options
+        return [option for option in options if "Lista de Episódios" not in option['title']]
     return []
 
 def prefetch_pages(urls):
@@ -733,28 +732,22 @@ def delete_user(user_id):
 @login_required
 def search_videos():
     search_term = request.args.get('query')
-    page = request.args.get('page', 1, type=int)  # Página atual (padrão 1)
+    page = request.args.get('page', 1, type=int)
 
     if not search_term:
         return jsonify({"error": "Query parameter is required"}), 400
     
-    # Construir a URL base com o termo de pesquisa e página atual
     if page == 1:
         base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/"
     else:
         base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/page-{page}/"
 
-    # Fazer o scrape da página atual
     soup = get_content(base_url)
     if not soup:
         return jsonify({"error": "Erro ao carregar a página inicial."}), 500
 
     total_pages = get_total_pages(soup)
-    
-    # Buscar vídeos na página atual
-    options = fetch_page(base_url)
-
-    # Ordenar os vídeos
+    options = get_video_options(soup)
     sorted_options = sort_videos(options)
 
     return jsonify({
@@ -772,12 +765,17 @@ def get_embed():
         logger.error("URL ou título do vídeo não fornecidos")
         return jsonify({"error": "URL e título do vídeo são obrigatórios."}), 400
 
-    embed_url = get_video_embed(video_url)
-    if not embed_url:
+    soup = get_content(video_url)
+    if not soup:
+        return jsonify({"error": "Não foi possível acessar a página do vídeo."}), 500
+
+    iframe = soup.select_one('iframe[name="Player"]')
+    if iframe and 'src' in iframe.attrs:
+        embed_url = iframe['src']
+    else:
         logger.error(f"Não foi possível encontrar o embed para a URL: {video_url}")
         return jsonify({"error": "Não foi possível encontrar o embed do vídeo."}), 500
 
-    # Use the updated save_to_history function
     save_to_history(video_url, video_title)
 
     return jsonify({"embed_url": embed_url})
