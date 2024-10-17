@@ -49,8 +49,8 @@ engine = create_engine('sqlite:///cache.db')
 Session = sessionmaker(bind=engine)
 
 proxies = {
-    'http': 'http://143.107.199.248:8080',
-    'https': 'http://143.107.199.248:8080'
+    'http': 'http://138.219.223.166:5678',
+    'https': 'http://138.219.223.166:5678'
 }
 
 # Create a persistent session
