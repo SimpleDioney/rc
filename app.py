@@ -33,6 +33,11 @@ import csv
 import logging
 import dns.resolver
 import datetime as dt
+import cloudscraper
+from fake_useragent import UserAgent
+import time
+import random
+from requests.exceptions import RequestException
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -86,22 +91,38 @@ class CloudflareHTTPAdapter(HTTPAdapter):
 # Create a persistent session with custom DNS resolver
 
 def create_persistent_session():
-    session = requests.Session()
-    retries = Retry(
-        total=5,
-        backoff_factor=0.1,
-        status_forcelist=[500, 502, 503, 504],
-        allowed_methods=None
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        },
+        delay=10
     )
-    adapter = HTTPAdapter(
-        max_retries=retries,
-        pool_connections=100,
-        pool_maxsize=100
-    )
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    session.verify = False
-    return session
+    
+    # Configurar headers padrão
+    ua = UserAgent()
+    default_headers = {
+        'User-Agent': ua.random,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://redecanais.tw/',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+        'Host': 'redecanais.tw',
+        'Sec-Ch-Ua': '"Chromium";v="116", "Not)A;Brand";v="24", "Google Chrome";v="116"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+    }
+    
+    scraper.headers.update(default_headers)
+    return scraper
     
 
 def initialize_session():
@@ -376,59 +397,72 @@ session = create_session()
 
 # Scraper
 
-def get_content(url, timeout=5):
+def get_content(url, max_retries=3, base_delay=2):
     global persistent_session
     
     cached_content = get_cached_content(url)
     if cached_content:
-        print(f"Usando cache para {url}")
+        logger.info(f"Using cache for {url}")
         return BeautifulSoup(cached_content, "html.parser")
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://redecanais.tw',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Cache-Control': 'max-age=0',
-    }
     
-    start_time = time.time()
-    try:
-        response = persistent_session.get(
-            url,
-            headers=headers,
-            timeout=timeout,
-            verify=False
-        )
-        response.raise_for_status()
-        content = response.text
-        save_to_cache(url, content)
-    except requests.RequestException as e:
-        logger.error(f"Request error for {url}: {str(e)}")
-        if isinstance(e, requests.SSLError):
-            logger.error("SSL Error occurred. Attempting to reconnect...")
-            initialize_session()
-            try:
-                response = persistent_session.get(
-                    url,
-                    headers=headers,
-                    timeout=timeout,
-                    verify=False
-                )
-                response.raise_for_status()
-                content = response.text
-                save_to_cache(url, content)
-            except requests.RequestException as retry_e:
-                logger.error(f"Retry failed for {url}: {str(retry_e)}")
-                return None
-        else:
-            return None
+    ua = UserAgent()
+    
+    for attempt in range(max_retries):
+        try:
+            # Adicionar delay exponencial entre tentativas
+            if attempt > 0:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                logger.info(f"Waiting {delay:.2f} seconds before retry {attempt + 1}")
+                time.sleep(delay)
             
-    end_time = time.time()
-    logger.info(f"Request to {url} took {end_time - start_time:.2f} seconds")
-    return BeautifulSoup(content, "html.parser")
+            # Atualizar User-Agent a cada tentativa
+            persistent_session.headers.update({
+                'User-Agent': ua.random,
+                'X-Requested-With': 'XMLHttpRequest',
+            })
+            
+            logger.info(f"Attempt {attempt + 1} for URL: {url}")
+            response = persistent_session.get(
+                url,
+                allow_redirects=True,
+                timeout=10
+            )
+            
+            # Verificar se a resposta é um redirecionamento
+            if response.history:
+                logger.info(f"Request was redirected {len(response.history)} times")
+                for r in response.history:
+                    logger.info(f"Redirect: {r.status_code} - {r.url}")
+            
+            response.raise_for_status()
+            
+            # Verificar se o conteúdo parece ser válido
+            if 'cf-browser-verification' in response.text:
+                logger.warning("Cloudflare detection encountered")
+                if attempt == max_retries - 1:
+                    logger.error("Failed to bypass Cloudflare after all retries")
+                    return None
+                continue
+                
+            content = response.text
+            save_to_cache(url, content)
+            return BeautifulSoup(content, "html.parser")
+            
+        except RequestException as e:
+            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+            if attempt == max_retries - 1:
+                logger.error(f"All {max_retries} attempts failed for URL: {url}")
+                return None
+            
+            # Se for o último erro e for 403, tentar recriar a sessão
+            if attempt == max_retries - 1 and hasattr(e, 'response') and e.response.status_code == 403:
+                logger.info("Recreating session after 403 error")
+                persistent_session = create_persistent_session()
+                
+        except Exception as e:
+            logger.error(f"Unexpected error on attempt {attempt + 1}: {str(e)}")
+            if attempt == max_retries - 1:
+                return None
 
 # Add error handler for 500 errors
 @app.errorhandler(500)
@@ -811,15 +845,23 @@ def search_videos():
     
     try:
         if page == 1:
-            base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/"
+            base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term.lower())}/"
         else:
-            base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/page-{page}/"
+            base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term.lower())}/page-{page}/"
 
         logger.info(f"Searching with URL: {base_url}")
         
         soup = get_content(base_url)
         if not soup:
-            return jsonify({"error": "Failed to load search results. Please try again."}), 500
+            logger.error("Failed to get content, trying alternative URL format")
+            # Tentar formato alternativo de URL
+            alt_url = f"https://redecanais.tw/search?s={urllib.parse.quote(search_term.lower())}"
+            if page > 1:
+                alt_url += f"&page={page}"
+            
+            soup = get_content(alt_url)
+            if not soup:
+                return jsonify({"error": "Failed to load search results. Please try again."}), 500
 
         total_pages = get_total_pages(soup)
         options = fetch_page(base_url)
