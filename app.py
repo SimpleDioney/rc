@@ -31,6 +31,10 @@ import hashlib
 from io import StringIO
 import csv
 import logging
+import dns.resolver
+import datetime as dt
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
@@ -38,20 +42,74 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 app.secret_key = 'Dioneyyy'
+
+# Initialize SQLAlchemy
 Base = declarative_base()
 engine = create_engine('sqlite:///cache.db')
 Session = sessionmaker(bind=engine)
 
-# Create a persistent session
+# Initialize global session variable
+persistent_session = None
+
+# Configure DNS resolver to use Cloudflare's DNS
+def configure_dns():
+    resolver = dns.resolver.Resolver()
+    resolver.nameservers = ['1.1.1.1', '1.0.0.1']  # Cloudflare DNS servers
+    return resolver
+
+dns_resolver = configure_dns()
+
+class CloudflareHTTPAdapter(HTTPAdapter):
+    def __init__(self, *args, **kwargs):
+        self.dns_resolver = kwargs.pop('dns_resolver', dns_resolver)
+        super().__init__(*args, **kwargs)
+
+    def send(self, request, **kwargs):
+        # Parse the URL
+        parsed_url = urllib.parse.urlparse(request.url)
+        
+        try:
+            # Resolve the domain using Cloudflare DNS
+            answer = self.dns_resolver.resolve(parsed_url.hostname, 'A')
+            ip = str(answer[0])
+            
+            # Modify the URL to use the resolved IP but keep the Host header
+            url_with_ip = parsed_url._replace(netloc=ip).geturl()
+            request.url = url_with_ip
+            request.headers['Host'] = parsed_url.hostname
+            
+        except Exception as e:
+            logger.error(f"DNS resolution error: {str(e)}")
+            
+        return super().send(request, **kwargs)
+
+# Create a persistent session with custom DNS resolver
+
 def create_persistent_session():
     session = requests.Session()
-    retries = Retry(total=5, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retries, pool_connections=100, pool_maxsize=100)
+    retries = Retry(
+        total=5,
+        backoff_factor=0.1,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=None
+    )
+    adapter = HTTPAdapter(
+        max_retries=retries,
+        pool_connections=100,
+        pool_maxsize=100
+    )
     session.mount('http://', adapter)
     session.mount('https://', adapter)
+    session.verify = False
     return session
+    
 
-persistent_session = create_persistent_session()
+def initialize_session():
+    global persistent_session
+    persistent_session = create_persistent_session()
+
+# Initialize session at module level
+initialize_session()
 
 # Database models
 class User(Base):
@@ -61,7 +119,7 @@ class User(Base):
     password = Column(String(100), nullable=False)
     is_admin = Column(Boolean, default=False)
     admin_level = Column(Integer, default=0)
-    admin_password = Column(String(100))  # Nova coluna para senha de admin
+    admin_password = Column(String(100))
     created_by = Column(Integer, ForeignKey('users.id'))
     created_admins = relationship('User', backref='creator', remote_side=[id])
     viewing_history = relationship('ViewingHistory', back_populates='user')
@@ -72,24 +130,24 @@ class CacheEntry(Base):
     id = Column(Integer, primary_key=True)
     url = Column(String, unique=True, nullable=False)
     content = Column(Text, nullable=False)
-    timestamp = Column(DateTime, default=datetime.now(pytz.timezone('America/Sao_Paulo')))
+    timestamp = Column(DateTime, default=lambda: datetime.now(pytz.UTC))
 
 class RecentActivity(Base):
     __tablename__ = 'recent_activities'
     id = Column(Integer, primary_key=True)
     activity_type = Column(String(50), nullable=False)
     description = Column(String(255), nullable=False)
-    timestamp = Column(DateTime, default=datetime.now(pytz.timezone('America/Sao_Paulo')))
+    timestamp = Column(DateTime, default=lambda: datetime.now(pytz.timezone('America/Sao_Paulo')))
 
 class ViewingHistory(Base):
     __tablename__ = 'viewing_history'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
-    content_type = Column(String, nullable=False)  # 'series' ou 'filmes'
+    content_type = Column(String, nullable=False)
     title = Column(String, nullable=False)
-    episodes = Column(JSON)  # Para series: {"season": [{"episode": "title", "url": "url"}]}
-    url = Column(String)  # Para filmes
-    last_watched = Column(DateTime, default=datetime.now(pytz.timezone('America/Sao_Paulo')))
+    episodes = Column(JSON)
+    url = Column(String)
+    last_watched = Column(DateTime, default=lambda: datetime.now(pytz.timezone('America/Sao_Paulo')))
     user = relationship('User', back_populates='viewing_history')
 
 def is_series(title):
@@ -132,7 +190,8 @@ def get_cache_key(url):
 def get_cached_content(url):
     db_session = Session()
     cache_entry = db_session.query(CacheEntry).filter_by(url=url).first()
-    if cache_entry and datetime.utcnow() - cache_entry.timestamp < timedelta(hours=1):
+    # Use timezone-aware UTC datetime
+    if cache_entry and dt.datetime.now(dt.UTC) - cache_entry.timestamp.replace(tzinfo=dt.UTC) < timedelta(hours=1):
         db_session.close()
         return cache_entry.content
     db_session.close()
@@ -141,11 +200,13 @@ def get_cached_content(url):
 def save_to_cache(url, content):
     db_session = Session()
     cache_entry = db_session.query(CacheEntry).filter_by(url=url).first()
+    # Use timezone-aware UTC datetime
+    current_time = dt.datetime.now(dt.UTC)
     if cache_entry:
         cache_entry.content = content
-        cache_entry.timestamp = datetime.utcnow()
+        cache_entry.timestamp = current_time
     else:
-        new_entry = CacheEntry(url=url, content=content)
+        new_entry = CacheEntry(url=url, content=content, timestamp=current_time)
         db_session.add(new_entry)
     db_session.commit()
     db_session.close()
@@ -316,32 +377,64 @@ session = create_session()
 # Scraper
 
 def get_content(url, timeout=5):
+    global persistent_session
+    
     cached_content = get_cached_content(url)
     if cached_content:
         print(f"Usando cache para {url}")
         return BeautifulSoup(cached_content, "html.parser")
 
     headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Referer': 'https://redecanais.tw',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Cache-Control': 'max-age=0',
-}
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://redecanais.tw',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+    }
+    
     start_time = time.time()
     try:
-        response = session.get(url, headers=headers, timeout=timeout)
+        response = persistent_session.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            verify=False
+        )
         response.raise_for_status()
         content = response.text
         save_to_cache(url, content)
     except requests.RequestException as e:
-        print(f"Erro ao fazer a requisição para {url}: {e}")
-        return None
+        logger.error(f"Request error for {url}: {str(e)}")
+        if isinstance(e, requests.SSLError):
+            logger.error("SSL Error occurred. Attempting to reconnect...")
+            initialize_session()
+            try:
+                response = persistent_session.get(
+                    url,
+                    headers=headers,
+                    timeout=timeout,
+                    verify=False
+                )
+                response.raise_for_status()
+                content = response.text
+                save_to_cache(url, content)
+            except requests.RequestException as retry_e:
+                logger.error(f"Retry failed for {url}: {str(retry_e)}")
+                return None
+        else:
+            return None
+            
     end_time = time.time()
-    print(f"Requisição para {url} levou {end_time - start_time:.2f} segundos.")
+    logger.info(f"Request to {url} took {end_time - start_time:.2f} seconds")
     return BeautifulSoup(content, "html.parser")
+
+# Add error handler for 500 errors
+@app.errorhandler(500)
+def internal_error(error):
+    logger.error(f"Internal Server Error: {error}")
+    return jsonify({"error": "An internal server error occurred. Please try again later."}), 500
 
 
 def get_video_options(soup):
@@ -711,35 +804,36 @@ def delete_user(user_id):
 @login_required
 def search_videos():
     search_term = request.args.get('query')
-    page = request.args.get('page', 1, type=int)  # Página atual (padrão 1)
+    page = request.args.get('page', 1, type=int)
 
     if not search_term:
         return jsonify({"error": "Query parameter is required"}), 400
     
-    # Construir a URL base com o termo de pesquisa e página atual
-    if page == 1:
-        base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/"
-    else:
-        base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/page-{page}/"
+    try:
+        if page == 1:
+            base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/"
+        else:
+            base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term)}/page-{page}/"
 
-    # Fazer o scrape da página atual
-    soup = get_content(base_url)
-    if not soup:
-        return jsonify({"error": "Erro ao carregar a página inicial."}), 500
+        logger.info(f"Searching with URL: {base_url}")
+        
+        soup = get_content(base_url)
+        if not soup:
+            return jsonify({"error": "Failed to load search results. Please try again."}), 500
 
-    total_pages = get_total_pages(soup)
-    
-    # Buscar vídeos na página atual
-    options = fetch_page(base_url)
+        total_pages = get_total_pages(soup)
+        options = fetch_page(base_url)
+        sorted_options = sort_videos(options)
 
-    # Ordenar os vídeos
-    sorted_options = sort_videos(options)
-
-    return jsonify({
-        "current_page": page,
-        "total_pages": total_pages,
-        "videos": sorted_options
-    })
+        return jsonify({
+            "current_page": page,
+            "total_pages": total_pages,
+            "videos": sorted_options
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in search_videos: {str(e)}")
+        return jsonify({"error": "An error occurred while processing your request"}), 500
 
 @app.route('/embed', methods=['GET'])
 @login_required
@@ -939,7 +1033,12 @@ def proxy():
     return jsonify({"embed_url": adjusted_url})
 
 if __name__ == "__main__":
-
     create_super_admin(app)
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', ssl_context='adhoc', port=port)
+    
+    if os.environ.get("FLASK_ENV") == "development":
+        app.run(host='0.0.0.0', port=port, debug=True)
+    else:
+        print("WARNING: Running in production mode. Make sure to use a production WSGI server!")
+        from waitress import serve
+        serve(app, host='0.0.0.0', port=port)
