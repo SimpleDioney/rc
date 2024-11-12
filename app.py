@@ -1,138 +1,123 @@
 # Flask setup
-from flask import Flask, jsonify, flash, request, send_file, Response, render_template, redirect, url_for, session as flask_session, render_template_string, current_app
+from flask import Flask, jsonify, flash, request, send_file, Response
+from flask import render_template, redirect, url_for, session as flask_session
+from flask import render_template_string, current_app
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_compress import Compress
 
 # Security and authentication
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
+from functools import wraps
 
 # Database and ORM
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, desc, func, Boolean, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import relationship, sessionmaker
-from datetime import datetime, timedelta
+from sqlalchemy.orm import relationship, sessionmaker, scoped_session
+from sqlalchemy.pool import QueuePool
 
-# Utilities
+# Date and time
+from datetime import datetime, timedelta
+import pytz
+from pytz import timezone
+import time
+
+# Web scraping and networking
 import requests
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
-from functools import wraps
 from bs4 import BeautifulSoup
-import pytz
-from pytz import timezone
 import urllib.parse
-import re
-import time
-import concurrent.futures
-import os
-import json
-import hashlib
-from io import StringIO
-import csv
-import logging
-import dns.resolver
-import datetime as dt
 import cloudscraper
 from fake_useragent import UserAgent
-import time
-import random
-from requests.exceptions import RequestException
+import dns.resolver
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-app = Flask(__name__)
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-app.secret_key = 'Dioneyyy'
+# Utilities
+import os
+import json
+import hashlib
+import logging
+import re
+import csv
+from io import StringIO
+import concurrent.futures
+from pathlib import Path
+from dotenv import load_dotenv
+import random
 
-# Initialize SQLAlchemy
+# Load environment variables
+load_dotenv()
+
+# Configuration class
+class Config:
+    SECRET_KEY = os.getenv('SECRET_KEY', secrets.token_hex(32))
+    FLASK_ENV = os.getenv('FLASK_ENV', 'production')
+    DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///cache.db')
+    AWS_REGION = os.getenv('AWS_REGION', 'sa-east')
+    PERMANENT_SESSION_LIFETIME = timedelta(days=365)
+    SESSION_TYPE = 'filesystem'
+    SESSION_FILE_DIR = '/tmp/flask_session'
+    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+    RATE_LIMIT = os.getenv('RATE_LIMIT', '200 per minute')
+    COMPRESS_LEVEL = 6
+    COMPRESS_ALGORITHM = ['br', 'gzip', 'deflate']
+    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max file size
+
+# Initialize Flask app
+app = Flask(__name__)
+app.config.from_object(Config)
+
+# Initialize extensions
+CORS(app, resources={r"/*": {"origins": "*"}})
+Compress(app)
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=[Config.RATE_LIMIT]
+)
+
+# Configure logging
+logging.basicConfig(level=getattr(logging, Config.LOG_LEVEL))
+logger = logging.getLogger(__name__)
+
+if not app.debug:
+    log_dir = Path("/var/log/videohub")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_dir / 'app.log',
+        maxBytes=10485760,  # 10MB
+        backupCount=10
+    )
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+    ))
+    file_handler.setLevel(logging.INFO)
+    app.logger.addHandler(file_handler)
+    app.logger.setLevel(logging.INFO)
+    app.logger.info('VideoHub startup')
+
+# Initialize database
 Base = declarative_base()
-engine = create_engine('sqlite:///cache.db')
-Session = sessionmaker(bind=engine)
+engine = create_engine(
+    Config.DATABASE_URL,
+    poolclass=QueuePool,
+    pool_size=20,
+    max_overflow=0,
+    pool_pre_ping=True,
+    pool_recycle=3600
+)
+Session = scoped_session(sessionmaker(bind=engine))
 
 # Initialize global session variable
 persistent_session = None
 
-# Configure DNS resolver to use Cloudflare's DNS
-def configure_dns():
-    resolver = dns.resolver.Resolver()
-    resolver.nameservers = ['1.1.1.1', '1.0.0.1']  # Cloudflare DNS servers
-    return resolver
-
-dns_resolver = configure_dns()
-
-class CloudflareHTTPAdapter(HTTPAdapter):
-    def __init__(self, *args, **kwargs):
-        self.dns_resolver = kwargs.pop('dns_resolver', dns_resolver)
-        super().__init__(*args, **kwargs)
-
-    def send(self, request, **kwargs):
-        # Parse the URL
-        parsed_url = urllib.parse.urlparse(request.url)
-        
-        try:
-            # Resolve the domain using Cloudflare DNS
-            answer = self.dns_resolver.resolve(parsed_url.hostname, 'A')
-            ip = str(answer[0])
-            
-            # Modify the URL to use the resolved IP but keep the Host header
-            url_with_ip = parsed_url._replace(netloc=ip).geturl()
-            request.url = url_with_ip
-            request.headers['Host'] = parsed_url.hostname
-            
-        except Exception as e:
-            logger.error(f"DNS resolution error: {str(e)}")
-            
-        return super().send(request, **kwargs)
-
-# Create a persistent session with custom DNS resolver
-
-def create_persistent_session():
-    scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'desktop': True
-        },
-        delay=10
-    )
-    
-    # Configurar headers padrão
-    ua = UserAgent()
-    default_headers = {
-        'User-Agent': ua.random,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://redecanais.tw/',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Cache-Control': 'max-age=0',
-        'Host': 'redecanais.tw',
-        'Sec-Ch-Ua': '"Chromium";v="116", "Not)A;Brand";v="24", "Google Chrome";v="116"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1',
-    }
-    
-    scraper.headers.update(default_headers)
-    return scraper
-    
-
-def initialize_session():
-    global persistent_session
-    persistent_session = create_persistent_session()
-
-# Initialize session at module level
-initialize_session()
-
-# Database models
+# Database Models
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
@@ -145,6 +130,9 @@ class User(Base):
     created_admins = relationship('User', backref='creator', remote_side=[id])
     viewing_history = relationship('ViewingHistory', back_populates='user')
     is_super_admin = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(pytz.UTC))
+    last_login = Column(DateTime)
+    is_active = Column(Boolean, default=True)
 
 class CacheEntry(Base):
     __tablename__ = 'cache_entries'
@@ -152,6 +140,8 @@ class CacheEntry(Base):
     url = Column(String, unique=True, nullable=False)
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=lambda: datetime.now(pytz.UTC))
+    hits = Column(Integer, default=0)
+    last_accessed = Column(DateTime)
 
 class RecentActivity(Base):
     __tablename__ = 'recent_activities'
@@ -159,6 +149,9 @@ class RecentActivity(Base):
     activity_type = Column(String(50), nullable=False)
     description = Column(String(255), nullable=False)
     timestamp = Column(DateTime, default=lambda: datetime.now(pytz.timezone('America/Sao_Paulo')))
+    user_id = Column(Integer, ForeignKey('users.id'))
+    ip_address = Column(String(45))
+    user_agent = Column(String(255))
 
 class ViewingHistory(Base):
     __tablename__ = 'viewing_history'
@@ -169,71 +162,245 @@ class ViewingHistory(Base):
     episodes = Column(JSON)
     url = Column(String)
     last_watched = Column(DateTime, default=lambda: datetime.now(pytz.timezone('America/Sao_Paulo')))
+    watch_count = Column(Integer, default=1)
     user = relationship('User', back_populates='viewing_history')
 
+# Helper Functions
+def configure_dns():
+    """Configure DNS resolver to use Cloudflare's DNS"""
+    resolver = dns.resolver.Resolver()
+    resolver.nameservers = ['1.1.1.1', '1.0.0.1']
+    return resolver
+
+dns_resolver = configure_dns()
+
+class CloudflareHTTPAdapter(HTTPAdapter):
+    """Custom HTTP adapter for Cloudflare"""
+    def __init__(self, *args, **kwargs):
+        self.dns_resolver = kwargs.pop('dns_resolver', dns_resolver)
+        super().__init__(*args, **kwargs)
+
+    def send(self, request, **kwargs):
+        parsed_url = urllib.parse.urlparse(request.url)
+        try:
+            answer = self.dns_resolver.resolve(parsed_url.hostname, 'A')
+            ip = str(answer[0])
+            url_with_ip = parsed_url._replace(netloc=ip).geturl()
+            request.url = url_with_ip
+            request.headers['Host'] = parsed_url.hostname
+        except Exception as e:
+            logger.error(f"DNS resolution error: {str(e)}")
+        return super().send(request, **kwargs)
+
+def create_persistent_session():
+    """Create a persistent session with custom settings"""
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        },
+        delay=10
+    )
+    
+    ua = UserAgent()
+    default_headers = {
+        'User-Agent': ua.random,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+    }
+    
+    scraper.headers.update(default_headers)
+    return scraper
+
+def initialize_session():
+    """Initialize the global session"""
+    global persistent_session
+    persistent_session = create_persistent_session()
+
+# Initialize session at module level
+initialize_session()
+
+def get_cache_key(url):
+    """Generate a cache key for a URL"""
+    return hashlib.md5(url.encode()).hexdigest()
+
+def get_cached_content(url):
+    """Retrieve cached content for a URL"""
+    db_session = Session()
+    try:
+        cache_entry = db_session.query(CacheEntry).filter_by(url=url).first()
+        current_time = datetime.now(pytz.UTC)
+        
+        if cache_entry and (current_time - cache_entry.timestamp.replace(tzinfo=pytz.UTC)) < timedelta(hours=1):
+            cache_entry.hits += 1
+            cache_entry.last_accessed = current_time
+            db_session.commit()
+            return cache_entry.content
+        return None
+    finally:
+        db_session.close()
+
+def save_to_cache(url, content):
+    """Save content to cache"""
+    db_session = Session()
+    try:
+        current_time = datetime.now(pytz.UTC)
+        cache_entry = db_session.query(CacheEntry).filter_by(url=url).first()
+        
+        if cache_entry:
+            cache_entry.content = content
+            cache_entry.timestamp = current_time
+            cache_entry.hits += 1
+            cache_entry.last_accessed = current_time
+        else:
+            new_entry = CacheEntry(
+                url=url,
+                content=content,
+                timestamp=current_time,
+                last_accessed=current_time
+            )
+            db_session.add(new_entry)
+        
+        db_session.commit()
+        log_activity('cache', f'Cache entry added/updated: {url}')
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"Error saving to cache: {str(e)}")
+        raise
+    finally:
+        db_session.close()
+
 def is_series(title):
+    """Check if content is a series based on title"""
     return bool(re.search(r'temporada|season', title, re.IGNORECASE))
 
 def format_title(title):
-    # Formata o título para o formato correto
-    # Ex: "Breaking Bad 2ª Temporada - 01 – Seven Thirty-Seven -> Breaking Bad - 2ª Temporada - Episódio 01 - Seven Thirty-Seve"
+    """Format title consistently"""
     match = re.search(r'^(.*?)\s*(\d+)\s*ª?\s*Temporada\s*.*?-\s*(\d+)\s*–?\s*(.*)$', title)
     if match:
         show_name = match.group(1).strip()
         season = match.group(2).strip()
         episode = match.group(3).strip()
         episode_name = match.group(4).strip()
-
-        # Retorna o título formatado
         return f"{show_name} - {season}ª Temporada (Legendado) - Episódio {episode.zfill(2)} - {episode_name}"
-    return title  # Retorna o título original se não conseguir formatar
+    return title
 
 def extract_season_episode(title):
-    # Formata o título
+    """Extract season and episode numbers from title"""
     formatted_title = format_title(title)
-    
-    # Regex atualizada para suportar diversos formatos
-    match = re.search(r'(\d+)\s*ª?\s*Temporada.*?[-–]?\s*Episódio\s*(\d+)|'  # Formatos com "Temporada"
-                       r'(\d+)\s*ª?\s*Episódio\s*(\d+)|'  # Formatos com "Episódio"
-                       r'(\d+)\s*ª?\s*T\s*[-–]?\s*(\d+)',  # Formatos abreviados
-                       formatted_title)
+    match = re.search(r'(\d+)\s*ª?\s*Temporada.*?[-–]?\s*Episódio\s*(\d+)|'
+                     r'(\d+)\s*ª?\s*Episódio\s*(\d+)|'
+                     r'(\d+)\s*ª?\s*T\s*[-–]?\s*(\d+)',
+                     formatted_title)
     
     if match:
         season = int(match.group(1) or match.group(3) or match.group(5) or 0)
-        episode = int(match.group(2) or match.group(4) or 0)
+        episode = int(match.group(2) or match.group(4) or match.group(6) or 0)
         return season, episode
-    
-    return 0, 0  # Retorna 0 caso não consiga encontrar
+    return 0, 0
 
-def get_cache_key(url):
-    return hashlib.md5(url.encode()).hexdigest()
+# Authentication and Authorization Functions
+def create_super_admin(app):
+    """Create super admin if not exists"""
+    with app.app_context():
+        db_session = Session()
+        try:
+            super_admin = db_session.query(User).filter_by(is_super_admin=True).first()
+            if not super_admin:
+                username = os.getenv('SUPER_ADMIN_USER', 'admin')
+                password = os.getenv('SUPER_ADMIN_PASSWORD', 'change-this-password')
+                hashed_password = generate_password_hash(password)
+                super_admin = User(
+                    username=username,
+                    password=hashed_password,
+                    is_admin=True,
+                    admin_level=99999,
+                    is_super_admin=True,
+                    is_active=True
+                )
+                db_session.add(super_admin)
+                db_session.commit()
+                logger.info(f"Super Admin created: {username}")
+        except Exception as e:
+            db_session.rollback()
+            logger.error(f"Error creating super admin: {str(e)}")
+            raise
+        finally:
+            db_session.close()
 
-def get_cached_content(url):
+def check_auth(username, password):
+    """Check authentication credentials"""
     db_session = Session()
-    cache_entry = db_session.query(CacheEntry).filter_by(url=url).first()
-    # Use timezone-aware UTC datetime
-    if cache_entry and dt.datetime.now(dt.UTC) - cache_entry.timestamp.replace(tzinfo=dt.UTC) < timedelta(hours=1):
+    try:
+        user = db_session.query(User).filter_by(username=username, is_active=True).first()
+        if user and check_password_hash(user.password, password):
+            user.last_login = datetime.now(pytz.UTC)
+            db_session.commit()
+            return True
+        return False
+    finally:
         db_session.close()
-        return cache_entry.content
-    db_session.close()
-    return None
 
-def save_to_cache(url, content):
-    db_session = Session()
-    cache_entry = db_session.query(CacheEntry).filter_by(url=url).first()
-    # Use timezone-aware UTC datetime
-    current_time = dt.datetime.now(dt.UTC)
-    if cache_entry:
-        cache_entry.content = content
-        cache_entry.timestamp = current_time
-    else:
-        new_entry = CacheEntry(url=url, content=content, timestamp=current_time)
-        db_session.add(new_entry)
-    db_session.commit()
-    db_session.close()
-    log_activity('cache', f'Cache entry added: {url}')
+def authenticate():
+    """Send authentication challenge"""
+    return Response(
+        'Authentication required',
+        401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'}
+    )
 
+# Decorators
+def login_required(f):
+    """Decorator to require login for routes"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in flask_session:
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def requires_auth(f):
+    """Decorator to require HTTP basic auth"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+def admin_required(min_level=1):
+    """Decorator to require admin access with minimum level"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            user_id = flask_session.get('user_id')
+            if not user_id:
+                return redirect(url_for('login'))
+            
+            db_session = Session()
+            try:
+                user = db_session.query(User).get(user_id)
+                if not user or not user.is_admin or user.admin_level < min_level:
+                    abort(403)
+                return f(*args, **kwargs)
+            finally:
+                db_session.close()
+        return decorated_function
+    return decorator
+
+# History Management Functions
 def save_to_history(video_url, video_title):
+    """Save viewing history for user"""
     user_id = flask_session.get('user_id')
     if not user_id:
         logger.error("Attempted to save history without user_id in session")
@@ -282,12 +449,14 @@ def save_to_history(video_url, video_title):
                     existing_entry.episodes[season_str].append(new_episode_data)
                 
                 existing_entry.last_watched = current_time
+                existing_entry.watch_count += 1
                 
                 db_session.query(ViewingHistory)\
                     .filter_by(id=existing_entry.id)\
                     .update({
                         ViewingHistory.episodes: existing_entry.episodes,
                         ViewingHistory.last_watched: current_time,
+                        ViewingHistory.watch_count: ViewingHistory.watch_count + 1
                     })
             else:
                 new_entry = ViewingHistory(
@@ -295,7 +464,8 @@ def save_to_history(video_url, video_title):
                     content_type='series',
                     title=series_base_title,
                     episodes={season_str: [new_episode_data]},
-                    last_watched=current_time
+                    last_watched=current_time,
+                    watch_count=1
                 )
                 db_session.add(new_entry)
         else:
@@ -305,6 +475,7 @@ def save_to_history(video_url, video_title):
             
             if existing_movie:
                 existing_movie.last_watched = current_time
+                existing_movie.watch_count += 1
             else:
                 new_movie = ViewingHistory(
                     user_id=user_id,
@@ -312,11 +483,13 @@ def save_to_history(video_url, video_title):
                     title=video_title,
                     url=video_url,
                     last_watched=current_time,
+                    watch_count=1,
                     episodes=None
                 )
                 db_session.add(new_movie)
 
         db_session.commit()
+        log_activity('watch', f'User watched: {video_title}', user_id=user_id)
         logger.info(f"History updated successfully: user_id={user_id}, title={video_title}")
     except SQLAlchemyError as e:
         db_session.rollback()
@@ -324,98 +497,47 @@ def save_to_history(video_url, video_title):
     finally:
         db_session.close()
 
-Base.metadata.create_all(engine)
-
-# Helper functions
-def log_activity(activity_type, description):
+def log_activity(activity_type, description, user_id=None):
+    """Log user activity"""
     db_session = Session()
-    new_activity = RecentActivity(activity_type=activity_type, description=description)
-    db_session.add(new_activity)
-    db_session.commit()
-    db_session.close()
-
-def create_super_admin(app):
-    with app.app_context():
-        db_session = Session()
-        super_admin = db_session.query(User).filter_by(is_super_admin=True).first()
-        if not super_admin:
-            username = 'Dioney'
-            password = 'Dioney13'  # Substitua por uma senha forte
-            hashed_password = generate_password_hash(password)
-            super_admin = User(
-                username=username,
-                password=hashed_password,
-                is_admin=True,
-                admin_level=99999,  # Um nível muito alto
-                is_super_admin=True
-            )
-            db_session.add(super_admin)
-            db_session.commit()
-            print(f"Super Admin criado: {username}")
+    try:
+        new_activity = RecentActivity(
+            activity_type=activity_type,
+            description=description,
+            user_id=user_id,
+            ip_address=request.remote_addr,
+            user_agent=request.user_agent.string[:255]
+        )
+        db_session.add(new_activity)
+        db_session.commit()
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"Error logging activity: {str(e)}")
+    finally:
         db_session.close()
 
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in flask_session:
-            return redirect(url_for('login', next=request.url))
-        return f(*args, **kwargs)
-    return decorated_function
-
-def check_auth(username, password):
-    db_session = Session()
-    user = db_session.query(User).filter_by(username=username).first()
-    db_session.close()
-    if user and user.is_super_admin:
-        return check_password_hash(user.password, password)
-    return username == 'Dioney' and password == 'Dioney13'
-    
-def authenticate():
-    return Response(
-        'Autenticação necessária', 401,
-        {'WWW-Authenticate': 'Basic realm="Login necessário"'})
-
-def requires_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return authenticate()
-        return f(*args, **kwargs)
-    return decorated
-
-
-def create_session():
-    session = requests.Session()
-    retry = Retry(total=3, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=100, pool_maxsize=100)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    return session
-
-session = create_session()
-
-# Scraper
-
+# Content Scraping Functions
 def get_content(url, max_retries=3, base_delay=2):
+    """Get content from URL with retry mechanism"""
     global persistent_session
     
+    # Check cache first
     cached_content = get_cached_content(url)
     if cached_content:
-        logger.info(f"Using cache for {url}")
+        logger.info(f"Using cached content for {url}")
         return BeautifulSoup(cached_content, "html.parser")
     
     ua = UserAgent()
     
     for attempt in range(max_retries):
         try:
-            # Adicionar delay exponencial entre tentativas
+            # Add exponential backoff delay between retries
             if attempt > 0:
                 delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
                 logger.info(f"Waiting {delay:.2f} seconds before retry {attempt + 1}")
                 time.sleep(delay)
             
-            # Atualizar User-Agent a cada tentativa
+            # Update User-Agent for each attempt
             persistent_session.headers.update({
                 'User-Agent': ua.random,
                 'X-Requested-With': 'XMLHttpRequest',
@@ -425,10 +547,11 @@ def get_content(url, max_retries=3, base_delay=2):
             response = persistent_session.get(
                 url,
                 allow_redirects=True,
-                timeout=10
+                timeout=10,
+                verify=False
             )
             
-            # Verificar se a resposta é um redirecionamento
+            # Log redirects
             if response.history:
                 logger.info(f"Request was redirected {len(response.history)} times")
                 for r in response.history:
@@ -436,25 +559,25 @@ def get_content(url, max_retries=3, base_delay=2):
             
             response.raise_for_status()
             
-            # Verificar se o conteúdo parece ser válido
+            # Check for Cloudflare detection
             if 'cf-browser-verification' in response.text:
                 logger.warning("Cloudflare detection encountered")
                 if attempt == max_retries - 1:
                     logger.error("Failed to bypass Cloudflare after all retries")
                     return None
                 continue
-                
+            
             content = response.text
             save_to_cache(url, content)
             return BeautifulSoup(content, "html.parser")
             
-        except RequestException as e:
+        except requests.RequestException as e:
             logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
             if attempt == max_retries - 1:
                 logger.error(f"All {max_retries} attempts failed for URL: {url}")
                 return None
             
-            # Se for o último erro e for 403, tentar recriar a sessão
+            # Recreate session on last 403 error
             if attempt == max_retries - 1 and hasattr(e, 'response') and e.response.status_code == 403:
                 logger.info("Recreating session after 403 error")
                 persistent_session = create_persistent_session()
@@ -464,14 +587,8 @@ def get_content(url, max_retries=3, base_delay=2):
             if attempt == max_retries - 1:
                 return None
 
-# Add error handler for 500 errors
-@app.errorhandler(500)
-def internal_error(error):
-    logger.error(f"Internal Server Error: {error}")
-    return jsonify({"error": "An internal server error occurred. Please try again later."}), 500
-
-
 def get_video_options(soup):
+    """Extract video options from parsed HTML"""
     options = []
     for thumbnail in soup.select('div.thumbnail'):
         caption = thumbnail.select_one('div.caption')
@@ -483,158 +600,521 @@ def get_video_options(soup):
                     title = a_tag.text.strip()
                     link = a_tag['href']
                     
-                    # Extract cover image URL
+                    # Get cover image
                     img_tag = thumbnail.select_one('img[data-echo]')
                     cover_image = img_tag['data-echo'] if img_tag else None
                     
-                    options.append({'title': title, 'link': link, 'cover_image': cover_image})
+                    # Add metadata
+                    metadata = {
+                        'title': title,
+                        'link': link,
+                        'cover_image': cover_image,
+                        'type': 'series' if is_series(title) else 'movie'
+                    }
+                    
+                    if metadata['type'] == 'series':
+                        season, episode = extract_season_episode(title)
+                        metadata.update({
+                            'season': season,
+                            'episode': episode
+                        })
+                    
+                    options.append(metadata)
     return options
 
 def get_total_pages(soup):
+    """Extract total number of pages from pagination"""
     pagination = soup.select_one('ul.pagination')
     if pagination:
-        last_page = pagination.select('li')[-2].select_one('a')
-        if last_page and last_page.text.isdigit():
-            return int(last_page.text)
+        # Try to find the last page number
+        pages = pagination.select('li a')
+        page_numbers = []
+        for page in pages:
+            try:
+                num = int(page.text.strip())
+                page_numbers.append(num)
+            except ValueError:
+                continue
+        
+        if page_numbers:
+            return max(page_numbers)
     return 1
 
 def get_video_embed(url):
-    soup = get_content(url)
-    if not soup:
+    """Extract video embed URL from page"""
+    try:
+        soup = get_content(url)
+        if not soup:
+            return None
+            
+        # Try to find iframe with player
+        iframe = soup.select_one('iframe[name="Player"]')
+        if iframe and 'src' in iframe.attrs:
+            embed_url = iframe['src']
+            
+            # Validate and clean embed URL
+            parsed = urllib.parse.urlparse(embed_url)
+            if not parsed.scheme:
+                embed_url = f"https:{embed_url}"
+            
+            return embed_url
+            
+        logger.error(f"No player iframe found for URL: {url}")
         return None
-    iframe = soup.select_one('iframe[name="Player"]')
-    return iframe['src'] if iframe and 'src' in iframe.attrs else None
+        
+    except Exception as e:
+        logger.error(f"Error getting video embed for {url}: {str(e)}")
+        return None
 
 def fetch_page(url):
+    """Fetch and process a single page of results"""
     soup = get_content(url)
     if soup:
         options = get_video_options(soup)
-        # Filtra os resultados com "Lista de Episódios" no título
-        filtered_options = [option for option in options if "Lista de Episódios" not in option['title']]
+        # Filter out "Lista de Episódios"
+        filtered_options = [
+            option for option in options 
+            if "Lista de Episódios" not in option['title']
+        ]
         return filtered_options
     return []
 
 def prefetch_pages(urls):
+    """Prefetch multiple pages in parallel"""
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        executor.map(fetch_page, urls)
+        future_to_url = {executor.submit(fetch_page, url): url for url in urls}
+        results = []
+        
+        for future in concurrent.futures.as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                data = future.result()
+                results.extend(data)
+            except Exception as e:
+                logger.error(f"Error fetching {url}: {str(e)}")
+        
+        return results
 
 def sort_videos(videos):
-    return sorted(videos, key=lambda x: extract_season_episode(x['title']))
+    """Sort videos by season and episode"""
+    return sorted(videos, key=lambda x: (
+        x.get('season', 0),
+        x.get('episode', 0),
+        x.get('title', '')
+    ))
 
-# Routes
+# Error Handlers
+@app.errorhandler(400)
+def bad_request(error):
+    """Handle 400 Bad Request errors"""
+    logger.warning(f"Bad Request: {error}")
+    return jsonify({
+        "error": "Bad Request",
+        "message": str(error)
+    }), 400
+
+@app.errorhandler(401)
+def unauthorized(error):
+    """Handle 401 Unauthorized errors"""
+    logger.warning(f"Unauthorized access attempt: {error}")
+    return jsonify({
+        "error": "Unauthorized",
+        "message": "Please login to access this resource"
+    }), 401
+
+@app.errorhandler(403)
+def forbidden(error):
+    """Handle 403 Forbidden errors"""
+    logger.warning(f"Forbidden access attempt: {error}")
+    return jsonify({
+        "error": "Forbidden",
+        "message": "You don't have permission to access this resource"
+    }), 403
+
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 Not Found errors"""
+    logger.warning(f"Resource not found: {error}")
+    return jsonify({
+        "error": "Not Found",
+        "message": "The requested resource was not found"
+    }), 404
+
+@app.errorhandler(429)
+def ratelimit_handler(error):
+    """Handle 429 Too Many Requests errors"""
+    logger.warning(f"Rate limit exceeded: {error}")
+    return jsonify({
+        "error": "Too Many Requests",
+        "message": "Rate limit exceeded. Please try again later."
+    }), 429
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle 500 Internal Server Error"""
+    logger.error(f"Internal Server Error: {error}")
+    return jsonify({
+        "error": "Internal Server Error",
+        "message": "An unexpected error occurred. Please try again later."
+    }), 500
+
+# Basic Routes
 @app.route('/')
 @login_required
 def index():
+    """Main page route"""
     return render_template('index.html')
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
+    """User registration route"""
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if not username or not password:
+            flash('Username and password are required', 'error')
+            return render_template('register.html'), 400
+        
         db_session = Session()
-        existing_user = db_session.query(User).filter_by(username=username).first()
-        if existing_user:
+        try:
+            # Check existing user
+            existing_user = db_session.query(User).filter_by(username=username).first()
+            if existing_user:
+                flash('Username already exists', 'error')
+                return render_template('register.html'), 400
+            
+            # Create new user
+            hashed_password = generate_password_hash(password)
+            new_user = User(
+                username=username,
+                password=hashed_password,
+                is_active=True
+            )
+            db_session.add(new_user)
+            db_session.commit()
+            
+            log_activity('register', f'New user registered: {username}')
+            flash('Registration successful! Please login.', 'success')
+            return redirect(url_for('login'))
+            
+        except SQLAlchemyError as e:
+            db_session.rollback()
+            logger.error(f"Database error during registration: {str(e)}")
+            flash('An error occurred during registration', 'error')
+            return render_template('register.html'), 500
+        finally:
             db_session.close()
-            return "Nome de usuário já existe", 400
-        hashed_password = generate_password_hash(password)
-        new_user = User(username=username, password=hashed_password)
-        db_session.add(new_user)
-        db_session.commit()
-        db_session.close()
-        log_activity('register', f'User registered: {username}')
-        return redirect(url_for('login'))
+            
     return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    """User login route"""
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
+        username = request.form.get('username')
+        password = request.form.get('password')
+        remember = request.form.get('remember', False)
+        
+        if not username or not password:
+            flash('Username and password are required', 'error')
+            return render_template('login.html'), 400
         
         db_session = Session()
-        user = db_session.query(User).filter_by(username=username).first()
-        
-        if user and check_password_hash(user.password, password):
-            flask_session['user_id'] = user.id  # Aqui o user_id é armazenado na sessão
-            flask_session.permanent = True
+        try:
+            user = db_session.query(User).filter_by(username=username, is_active=True).first()
+            
+            if user and check_password_hash(user.password, password):
+                flask_session['user_id'] = user.id
+                flask_session.permanent = True if remember else False
+                
+                # Update last login
+                user.last_login = datetime.now(pytz.UTC)
+                db_session.commit()
+                
+                log_activity('login', f'User login: {username}', user_id=user.id)
+                return redirect(url_for('index'))
+            
+            flash('Invalid username or password', 'error')
+            return render_template('login.html'), 401
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Database error during login: {str(e)}")
+            flash('An error occurred during login', 'error')
+            return render_template('login.html'), 500
+        finally:
             db_session.close()
-            log_activity('login', f'User login: {username}')
-            return redirect(url_for('index'))
-        
-        db_session.close()
-        return "Nome de usuário ou senha inválidos", 401
     
     return render_template('login.html')
 
 @app.route('/logout')
 def logout():
+    """User logout route"""
+    user_id = flask_session.get('user_id')
+    if user_id:
+        log_activity('logout', 'User logged out', user_id=user_id)
     flask_session.clear()
     return redirect(url_for('login'))
 
+# Search and Content Routes
+@app.route('/search', methods=['GET'])
+@login_required
+def search_videos():
+    """Search videos route"""
+    search_term = request.args.get('query')
+    page = request.args.get('page', 1, type=int)
+    
+    if not search_term:
+        return jsonify({"error": "Search query is required"}), 400
+    
+    try:
+        base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term.lower())}/"
+        if page > 1:
+            base_url = f"{base_url}page-{page}/"
+        
+        logger.info(f"Searching: {base_url}")
+        
+        soup = get_content(base_url)
+        if not soup:
+            # Try alternative URL format
+            alt_url = f"https://redecanais.tw/search?s={urllib.parse.quote(search_term.lower())}"
+            if page > 1:
+                alt_url += f"&page={page}"
+            
+            soup = get_content(alt_url)
+            if not soup:
+                return jsonify({"error": "Failed to load search results"}), 500
+        
+        total_pages = get_total_pages(soup)
+        options = fetch_page(base_url)
+        sorted_options = sort_videos(options)
+        
+        return jsonify({
+            "current_page": page,
+            "total_pages": total_pages,
+            "videos": sorted_options
+        })
+        
+    except Exception as e:
+        logger.error(f"Search error: {str(e)}")
+        return jsonify({"error": "An error occurred during search"}), 500
+
+@app.route('/embed', methods=['GET'])
+@login_required
+def get_embed():
+    """Get video embed URL route"""
+    video_url = request.args.get('url')
+    video_title = request.args.get('title')
+    
+    if not video_url or not video_title:
+        return jsonify({"error": "URL and title are required"}), 400
+    
+    try:
+        embed_url = get_video_embed(video_url)
+        if not embed_url:
+            return jsonify({"error": "Could not find video embed"}), 404
+        
+        save_to_history(video_url, video_title)
+        
+        return jsonify({"embed_url": embed_url})
+        
+    except Exception as e:
+        logger.error(f"Error getting embed URL: {str(e)}")
+        return jsonify({"error": "Failed to get video embed"}), 500
+
+@app.route('/proxy')
+@login_required
+def proxy():
+    """Proxy route for video content"""
+    video_url = request.args.get('url')
+    video_title = request.args.get('title')
+    
+    if not video_url:
+        return jsonify({"error": "URL is required"}), 400
+    
+    try:
+        video_embed_url = get_video_embed(video_url)
+        if not video_embed_url:
+            return jsonify({"error": "Could not find video embed"}), 404
+        
+        parsed_url = urllib.parse.urlparse(video_embed_url)
+        adjusted_url = urllib.parse.urlunparse(parsed_url._replace(netloc="redecanais.tw"))
+        
+        if video_title:
+            save_to_history(video_url, video_title)
+        
+        return jsonify({"embed_url": adjusted_url})
+        
+    except Exception as e:
+        logger.error(f"Proxy error: {str(e)}")
+        return jsonify({"error": "Failed to proxy video content"}), 500
+
+# History Routes
+@app.route('/history')
+@login_required
+def viewing_history():
+    """View history page route"""
+    return render_template('history.html')
+
+@app.route('/get_history')
+@login_required
+def get_history():
+    """Get user viewing history route"""
+    user_id = flask_session.get('user_id')
+    if not user_id:
+        return jsonify({"error": "User not authenticated"}), 401
+    
+    db_session = Session()
+    try:
+        history = db_session.query(ViewingHistory)\
+            .filter_by(user_id=user_id)\
+            .order_by(ViewingHistory.last_watched.desc())\
+            .all()
+        
+        history_data = []
+        for item in history:
+            entry = {
+                "content_type": item.content_type,
+                "title": item.title,
+                "last_watched": item.last_watched.isoformat(),
+                "watch_count": item.watch_count
+            }
+            
+            if item.content_type == 'series':
+                if item.episodes:
+                    entry.update({
+                        "seasons": len(item.episodes),
+                        "total_episodes": sum(len(episodes) for episodes in item.episodes.values())
+                    })
+            else:
+                entry["url"] = item.url
+                
+            history_data.append(entry)
+        
+        return jsonify(history_data)
+        
+    except SQLAlchemyError as e:
+        logger.error(f"Database error getting history: {str(e)}")
+        return jsonify({"error": "Failed to get viewing history"}), 500
+    finally:
+        db_session.close()
+
+@app.route('/get_series_details')
+@login_required
+def get_series_details():
+    """Get series details route"""
+    user_id = flask_session.get('user_id')
+    series_title = request.args.get('title')
+    
+    if not user_id or not series_title:
+        return jsonify({"error": "Invalid parameters"}), 400
+    
+    db_session = Session()
+    try:
+        series = db_session.query(ViewingHistory)\
+            .filter_by(user_id=user_id, content_type='series', title=series_title)\
+            .first()
+        
+        if not series or not series.episodes:
+            return jsonify({"error": "Series not found"}), 404
+        
+        episodes_data = []
+        for season, episodes in series.episodes.items():
+            for episode in episodes:
+                episodes_data.append({
+                    "season": int(season),
+                    "episode": episode["episode"],
+                    "title": episode["title"],
+                    "url": episode["url"],
+                    "last_watched": episode.get("last_watched", 
+                                             series.last_watched.isoformat() 
+                                             if series.last_watched else None)
+                })
+        
+        response_data = {
+            "title": series.title,
+            "last_watched": series.last_watched.isoformat() if series.last_watched else None,
+            "episodes": sorted(episodes_data, 
+                             key=lambda x: (x["season"], x["episode"])),
+            "total_episodes": len(episodes_data),
+            "total_seasons": len(series.episodes),
+            "watch_count": series.watch_count
+        }
+        
+        return jsonify(response_data)
+        
+    except SQLAlchemyError as e:
+        logger.error(f"Database error getting series details: {str(e)}")
+        return jsonify({"error": "Failed to get series details"}), 500
+    finally:
+        db_session.close()
+    
+# Admin Routes
 @app.route('/admin', methods=['GET', 'POST', 'DELETE'])
 @requires_auth
 def admin():
+    """Admin dashboard route"""
     db_session = Session()
+    try:
+        if request.method == 'POST':
+            url = request.form.get('url')
+            if url:
+                cache_entry = db_session.query(CacheEntry).filter_by(url=url).first()
+                if cache_entry:
+                    db_session.delete(cache_entry)
+                    db_session.commit()
+                    flash('Cache entry deleted successfully', 'success')
+                    log_activity('delete', f'Cache entry deleted: {url}')
+                else:
+                    flash('Cache entry not found', 'error')
+            return redirect(url_for('admin'))
 
-    if request.method == 'POST':
-        url = request.form.get('url')
-        if url:
-            cache_entry = db_session.query(CacheEntry).filter_by(url=url).first()
-            if cache_entry:
-                db_session.delete(cache_entry)
-                db_session.commit()
-                flash('Cache entry deleted successfully', 'success')
-                log_activity('delete', f'Cache entry deleted: {url}')
-            else:
-                flash('Cache entry not found', 'error')
-        return redirect(url_for('admin'))
+        # Get statistics
+        entries = db_session.query(CacheEntry).all()
+        total_users = db_session.query(User).count()
+        total_cache_entries = db_session.query(CacheEntry).count()
+        total_history_entries = db_session.query(ViewingHistory).count()
+        
+        # Get recent activities
+        recent_activities = db_session.query(RecentActivity)\
+            .order_by(RecentActivity.timestamp.desc())\
+            .limit(10)\
+            .all()
 
-    entries = db_session.query(CacheEntry).all()
-    total_users = db_session.query(User).count()
-    total_cache_entries = db_session.query(CacheEntry).count()
-    total_history_entries = db_session.query(ViewingHistory).count()
+        # Convert timestamps to São Paulo timezone
+        sao_paulo_tz = pytz.timezone('America/Sao_Paulo')
+        for activity in recent_activities:
+            activity.timestamp = activity.timestamp.replace(tzinfo=pytz.UTC).astimezone(sao_paulo_tz)
 
-    recent_activities = db_session.query(RecentActivity).order_by(RecentActivity.timestamp.desc()).limit(5).all()
-
-    sao_paulo_tz = pytz.timezone('America/Sao_Paulo')
-    for activity in recent_activities:
-        activity.timestamp = activity.timestamp.replace(tzinfo=pytz.UTC).astimezone(sao_paulo_tz)
-
-    db_session.close()
-
-    return render_template('admin.html', 
-                           entries=entries, 
-                           total_users=total_users, 
-                           total_cache_entries=total_cache_entries, 
-                           total_history_entries=total_history_entries,
-                           recent_activities=recent_activities)
+        return render_template('admin.html',
+                            entries=entries,
+                            total_users=total_users,
+                            total_cache_entries=total_cache_entries,
+                            total_history_entries=total_history_entries,
+                            recent_activities=recent_activities)
+                            
+    except Exception as e:
+        logger.error(f"Error in admin dashboard: {str(e)}")
+        flash('An error occurred loading the admin dashboard', 'error')
+        return redirect(url_for('index'))
+    finally:
+        db_session.close()
 
 @app.route('/admin/add', methods=['POST'])
 @requires_auth
 def add_admin():
+    """Add admin user route"""
     modifier_id = flask_session.get('user_id')
     target_username = request.json.get('username')
     admin_password = request.json.get('password')
     admin_level = request.json.get('admin_level', 1)
 
-    # Converta admin_level para int
     try:
         admin_level = int(admin_level)
     except ValueError:
-        return jsonify({"error": "Invalid admin_level format"}), 400
-
-    # Logging para depuração
-    app.logger.info(f"Modifier ID: {modifier_id}")
-    app.logger.info(f"Received Data: username={target_username}, password={admin_password}, admin_level={admin_level}")
-
-    # Verificar se o usuário está autenticado
-    if not modifier_id:
-        app.logger.error("User not authenticated")
-        return jsonify({"error": "User not authenticated"}), 400
+        return jsonify({"error": "Invalid admin level format"}), 400
 
     if not all([modifier_id, target_username, admin_password]):
-        app.logger.error("Missing required information")
         return jsonify({"error": "Missing required information"}), 400
 
     db_session = Session()
@@ -646,11 +1126,9 @@ def add_admin():
             return jsonify({"error": "User not found"}), 404
 
         if not modifier.is_admin or modifier.admin_level <= admin_level:
-            app.logger.error(f"Insufficient permissions for user {modifier.username}")
             return jsonify({"error": "Insufficient permissions"}), 403
 
         if target.is_admin:
-            app.logger.error(f"User {target.username} is already an admin")
             return jsonify({"error": "User is already an admin"}), 400
 
         target.is_admin = True
@@ -659,114 +1137,17 @@ def add_admin():
         target.created_by = modifier.id
 
         db_session.commit()
-        log_activity('add_admin', f'Admin added: {target.username} (Level {admin_level}) by {modifier.username}')
-        app.logger.info(f"Admin {target.username} added successfully")
-        return jsonify({"message": f"{target.username} is now an admin with level {admin_level}"}), 200
+        log_activity('add_admin', 
+                    f'Admin added: {target.username} (Level {admin_level}) by {modifier.username}',
+                    user_id=modifier.id)
+        
+        return jsonify({
+            "message": f"{target.username} is now an admin with level {admin_level}"
+        }), 200
 
     except Exception as e:
         db_session.rollback()
-        app.logger.error(f"Error during admin addition: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        db_session.close()
-
-
-@app.route('/admin/remove', methods=['POST'])
-@requires_auth
-def remove_admin():
-    modifier_id = flask_session.get('user_id')
-    target_username = request.json.get('username')
-
-    db_session = Session()
-    try:
-        modifier = db_session.query(User).get(modifier_id)
-        target = db_session.query(User).filter_by(username=target_username).first()
-
-        if not modifier or not target:
-            return jsonify({"error": "User not found"}), 404
-
-        if target.is_super_admin:
-            return jsonify({"error": "Cannot modify Super Admin"}), 403
-
-        if not can_modify_admin(modifier, target):
-            return jsonify({"error": "Insufficient permissions"}), 403
-
-        target.is_admin = False
-        target.admin_level = 0
-        target.created_by = None
-
-        db_session.commit()
-        log_activity('remove_admin', f'Admin removed: {target.username} by {modifier.username}')
-        return jsonify({"message": f"{target.username} is no longer an admin"}), 200
-
-    except Exception as e:
-        db_session.rollback()
-        return jsonify({"error": str(e)}), 500
-    finally:
-        db_session.close()
-
-
-@app.route('/admin/list', methods=['GET'])
-@requires_auth
-def list_admins():
-    db_session = Session()
-    try:
-        admins = db_session.query(User).filter(User.is_admin == True).all()
-        admin_list = [{
-            "id": admin.id,
-            "username": admin.username,
-            "admin_level": admin.admin_level,
-            "created_by": db_session.query(User).get(admin.created_by).username if admin.created_by else None
-        } for admin in admins]
-        return jsonify(admin_list), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        db_session.close()
-
-@app.route('/admin/all_users')
-@requires_auth
-def list_all_users():
-    db_session = Session()
-    try:
-        current_user = db_session.query(User).get(flask_session.get('user_id'))
-        if not current_user or not current_user.is_super_admin:
-            return jsonify({"error": "Insufficient permissions"}), 403
-
-        users = db_session.query(User).all()
-        user_list = [{
-            "id": user.id,
-            "username": user.username,
-            "is_admin": user.is_admin,
-            "admin_level": user.admin_level,
-            "is_super_admin": user.is_super_admin
-        } for user in users]
-        return jsonify(user_list), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        db_session.close()
-
-@app.route('/admin/verify_password', methods=['POST'])
-@requires_auth
-def verify_admin_password():
-    admin_id = request.json.get('admin_id')
-    password = request.json.get('password')
-
-    if not admin_id or not password:
-        return jsonify({"error": "Missing admin ID or password"}), 400
-
-    db_session = Session()
-    try:
-        admin = db_session.query(User).get(admin_id)
-        if not admin or not admin.is_admin:
-            return jsonify({"error": "Admin not found"}), 404
-
-        if check_password_hash(admin.admin_password, password):
-            return jsonify({"message": "Password verified"}), 200
-        else:
-            return jsonify({"error": "Invalid password"}), 401
-    except Exception as e:
+        logger.error(f"Error adding admin: {str(e)}")
         return jsonify({"error": str(e)}), 500
     finally:
         db_session.close()
@@ -774,14 +1155,17 @@ def verify_admin_password():
 @app.route('/admin/clear_cache', methods=['POST'])
 @requires_auth
 def clear_cache():
+    """Clear all cache entries route"""
     db_session = Session()
     try:
+        count = db_session.query(CacheEntry).count()
         db_session.query(CacheEntry).delete()
         db_session.commit()
-        log_activity('clear_cache', 'All cache entries cleared')
+        log_activity('clear_cache', f'Cleared {count} cache entries')
         flash('Cache cleared successfully', 'success')
     except Exception as e:
         db_session.rollback()
+        logger.error(f"Error clearing cache: {str(e)}")
         flash(f'Error clearing cache: {str(e)}', 'error')
     finally:
         db_session.close()
@@ -790,297 +1174,132 @@ def clear_cache():
 @app.route('/admin/download_logs')
 @requires_auth
 def download_logs():
+    """Download activity logs route"""
     tz = timezone('America/Sao_Paulo')
     db_session = Session()
-    activities = db_session.query(RecentActivity).order_by(RecentActivity.timestamp.desc()).all()
-    db_session.close()
+    try:
+        activities = db_session.query(RecentActivity)\
+            .order_by(RecentActivity.timestamp.desc())\
+            .all()
 
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['Timestamp', 'Activity Type', 'Description'])
-    for activity in activities:
-        activity_time = activity.timestamp.astimezone(tz)
-        writer.writerow([activity_time.strftime('%Y-%m-%d %H:%M:%S'), activity.activity_type, activity.description])
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['Timestamp', 'Activity Type', 'Description', 'User ID', 'IP Address'])
+        
+        for activity in activities:
+            activity_time = activity.timestamp.astimezone(tz)
+            writer.writerow([
+                activity_time.strftime('%Y-%m-%d %H:%M:%S'),
+                activity.activity_type,
+                activity.description,
+                activity.user_id,
+                activity.ip_address
+            ])
 
-    output.seek(0)
-    return Response(
-        output.getvalue(),
-        mimetype='text/csv',
-        headers={
-            "Content-Disposition": "attachment;filename=activity_logs.csv"
-        }
-    )
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={
+                "Content-Disposition": "attachment;filename=activity_logs.csv",
+                "Content-Type": "text/csv; charset=utf-8"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error downloading logs: {str(e)}")
+        flash('Error downloading logs', 'error')
+        return redirect(url_for('admin'))
+    finally:
+        db_session.close()
 
 @app.route('/admin/users')
 @requires_auth
 def list_users():
+    """List all users route"""
     db_session = Session()
-    users = db_session.query(User).all()
-    db_session.close()
-    return render_template('users.html', users=users)
+    try:
+        users = db_session.query(User).all()
+        return render_template('users.html', users=users)
+    except Exception as e:
+        logger.error(f"Error listing users: {str(e)}")
+        flash('Error loading user list', 'error')
+        return redirect(url_for('admin'))
+    finally:
+        db_session.close()
 
 @app.route('/admin/users/<int:user_id>/delete', methods=['POST'])
 @requires_auth
 def delete_user(user_id):
+    """Delete user route"""
     db_session = Session()
-    user = db_session.query(User).get(user_id)
-    if user:
-        db_session.delete(user)
-        db_session.commit()
-        log_activity('delete_user', f'User deleted: {user.username}')
-        flash(f'User {user.username} deleted successfully', 'success')
-    else:
-        flash('User not found', 'error')
-    db_session.close()
+    try:
+        user = db_session.query(User).get(user_id)
+        if user:
+            if user.is_super_admin:
+                flash('Cannot delete super admin', 'error')
+                return redirect(url_for('list_users'))
+                
+            username = user.username
+            db_session.delete(user)
+            db_session.commit()
+            log_activity('delete_user', f'User deleted: {username}')
+            flash(f'User {username} deleted successfully', 'success')
+        else:
+            flash('User not found', 'error')
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"Error deleting user: {str(e)}")
+        flash('Error deleting user', 'error')
+    finally:
+        db_session.close()
     return redirect(url_for('list_users'))
 
-@app.route('/search', methods=['GET'])
-@login_required
-def search_videos():
-    search_term = request.args.get('query')
-    page = request.args.get('page', 1, type=int)
-
-    if not search_term:
-        return jsonify({"error": "Query parameter is required"}), 400
-    
+@app.route('/health')
+def health_check():
+    """Health check route"""
     try:
-        if page == 1:
-            base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term.lower())}/"
-        else:
-            base_url = f"https://redecanais.tw/tags/{urllib.parse.quote(search_term.lower())}/page-{page}/"
-
-        logger.info(f"Searching with URL: {base_url}")
+        db_session = Session()
+        # Test database connection
+        db_session.execute('SELECT 1')
+        db_session.close()
         
-        soup = get_content(base_url)
-        if not soup:
-            logger.error("Failed to get content, trying alternative URL format")
-            # Tentar formato alternativo de URL
-            alt_url = f"https://redecanais.tw/search?s={urllib.parse.quote(search_term.lower())}"
-            if page > 1:
-                alt_url += f"&page={page}"
-            
-            soup = get_content(alt_url)
-            if not soup:
-                return jsonify({"error": "Failed to load search results. Please try again."}), 500
-
-        total_pages = get_total_pages(soup)
-        options = fetch_page(base_url)
-        sorted_options = sort_videos(options)
-
+        # Get system stats
+        total_users = db_session.query(User).count()
+        total_cache = db_session.query(CacheEntry).count()
+        
         return jsonify({
-            "current_page": page,
-            "total_pages": total_pages,
-            "videos": sorted_options
-        })
-        
-    except Exception as e:
-        logger.error(f"Error in search_videos: {str(e)}")
-        return jsonify({"error": "An error occurred while processing your request"}), 500
-
-@app.route('/embed', methods=['GET'])
-@login_required
-def get_embed():
-    video_url = request.args.get('url')
-    video_title = request.args.get('title')
-    if not video_url or not video_title:
-        logger.error("URL ou título do vídeo não fornecidos")
-        return jsonify({"error": "URL e título do vídeo são obrigatórios."}), 400
-
-    embed_url = get_video_embed(video_url)
-    if not embed_url:
-        logger.error(f"Não foi possível encontrar o embed para a URL: {video_url}")
-        return jsonify({"error": "Não foi possível encontrar o embed do vídeo."}), 500
-
-    # Use the updated save_to_history function
-    save_to_history(video_url, video_title)
-
-    return jsonify({"embed_url": embed_url})
-
-@app.route('/history')
-@login_required
-def viewing_history():
-    return render_template('history.html')
-
-@app.route('/get_history')
-@login_required
-def get_history():
-    user_id = flask_session.get('user_id')
-    if not user_id:
-        logger.error("Tentativa de acessar histórico sem user_id na sessão")
-        return jsonify({"error": "Usuário não autenticado"}), 401
-
-    db_session = Session()
-    try:
-        history = db_session.query(ViewingHistory)\
-            .filter_by(user_id=user_id)\
-            .order_by(ViewingHistory.last_watched.desc())\
-            .all()
-        
-        history_data = []
-        for item in history:
-            if item.content_type == 'series':
-                if item.episodes:
-                    first_season = min(item.episodes.keys())
-                    if item.episodes[first_season]:
-                        first_episode = item.episodes[first_season][0]
-                
-                history_data.append({
-                    "content_type": "series",
-                    "title": item.title,
-                    "last_watched": item.last_watched.isoformat(),
-                    "seasons": len(item.episodes) if item.episodes else 0,
-                    "total_episodes": sum(len(episodes) for episodes in item.episodes.values()) if item.episodes else 0
-                })
-            else:
-                history_data.append({
-                    "content_type": "movie",
-                    "title": item.title,
-                    "url": item.url,
-                    "last_watched": item.last_watched.isoformat()
-                })
-        
-        return jsonify(history_data)
-    except SQLAlchemyError as e:
-        logger.error(f"Erro ao buscar histórico: {str(e)}")
-        return jsonify({"error": "Erro ao buscar o histórico"}), 500
-    finally:
-        db_session.close()
-    
-@app.route('/get_series_details')
-@login_required
-def get_series_details():
-    user_id = flask_session.get('user_id')
-    series_title = request.args.get('title')
-    
-    if not user_id or not series_title:
-        return jsonify({"error": "Parâmetros inválidos"}), 400
-
-    db_session = Session()
-    try:
-        series = db_session.query(ViewingHistory)\
-            .filter_by(user_id=user_id, content_type='series', title=series_title)\
-            .first()
-        
-        if not series or not series.episodes:
-            return jsonify({"error": "Série não encontrada ou sem episódios"}), 404
-
-        episodes_data = []
-        for season, episodes in series.episodes.items():
-            for episode in episodes:
-                episodes_data.append({
-                    "season": int(season),
-                    "episode": episode["episode"],
-                    "title": episode["title"],
-                    "url": episode["url"],
-                    "last_watched": episode.get("last_watched", 
-                                               series.last_watched.isoformat() 
-                                               if series.last_watched else None)
-                })
-
-        response_data = {
-            "title": series.title,
-            "last_watched": series.last_watched.isoformat() if series.last_watched else None,
-            "episodes": sorted(episodes_data, 
-                              key=lambda x: (x["season"], x["episode"])),
-            "total_episodes": len(episodes_data),
-            "total_seasons": len(series.episodes)
-        }
-        
-        return jsonify(response_data)
-    except SQLAlchemyError as e:
-        logger.error(f"Erro ao buscar detalhes da série: {str(e)}")
-        return jsonify({"error": "Erro ao buscar detalhes da série"}), 500
-    finally:
-        db_session.close()
-        
-@app.route('/debug_history')
-@login_required
-def debug_history():
-    user_id = flask_session.get('user_id')
-    if not user_id:
-        return jsonify({"error": "Usuário não autenticado"}), 401
-
-    db_session = Session()
-    try:
-        history_entries = db_session.query(ViewingHistory)\
-            .filter_by(user_id=user_id)\
-            .all()
-        
-        debug_data = []
-        for entry in history_entries:
-            entry_data = {
-                "id": entry.id,
-                "content_type": entry.content_type,
-                "title": entry.title,
-                "last_watched": entry.last_watched.isoformat() if entry.last_watched else None,
-                "raw_episodes": entry.episodes,
-                "_raw_episodes_type": str(type(entry.episodes)),  # Debug: Check actual type
-                "_raw_episodes_repr": repr(entry.episodes)  # Debug: Full string representation
+            'status': 'healthy',
+            'database': 'connected',
+            'timestamp': datetime.now(pytz.UTC).isoformat(),
+            'stats': {
+                'total_users': total_users,
+                'cache_entries': total_cache
             }
-            
-            if entry.content_type == 'series':
-                if not isinstance(entry.episodes, dict):
-                    entry_data["_error"] = f"Episodes is not a dictionary: {type(entry.episodes)}"
-                    continue
-                
-                # Detailed episode information
-                detailed_episodes = {}
-                total_episodes = 0
-                for season, episodes in entry.episodes.items():
-                    if not isinstance(episodes, list):
-                        entry_data[f"_error_season_{season}"] = f"Season episodes is not a list: {type(episodes)}"
-                        continue
-                    
-                    detailed_episodes[season] = {
-                        "count": len(episodes),
-                        "episode_numbers": [ep.get("episode") for ep in episodes if isinstance(ep, dict)],
-                        "episode_titles": [ep.get("title") for ep in episodes if isinstance(ep, dict)]
-                    }
-                    total_episodes += len(episodes)
-                
-                entry_data["detailed_episodes"] = detailed_episodes
-                entry_data["total_episodes"] = total_episodes
-                entry_data["season_counts"] = {season: len(episodes) for season, episodes in entry.episodes.items()}
-            
-            debug_data.append(entry_data)
-        
-        return jsonify(debug_data)
-    except SQLAlchemyError as e:
-        logger.error(f"Error in debug_history: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        db_session.close()
-        
-@app.route('/proxy')
-@login_required
-def proxy():
-    video_url = request.args.get('url')
-    video_title = request.args.get('title', 'Título não disponível')
-    
-    if not video_url:
-        logger.error(f"Requisição de proxy inválida: url={video_url}")
-        return jsonify({"error": "URL is required"}), 400
-    
-    video_embed_url = get_video_embed(video_url)
-    
-    if not video_embed_url:
-        logger.error(f"Não foi possível obter o vídeo embed para: {video_url}")
-        return jsonify({"error": "Não foi possível obter o vídeo embed"}), 500
-    
-    parsed_url = urllib.parse.urlparse(video_embed_url)
-    adjusted_url = urllib.parse.urlunparse(parsed_url._replace(netloc="redecanais.tw"))
-    
-    save_to_history(video_url, video_title)
-    
-    return jsonify({"embed_url": adjusted_url})
+        })
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
 
+# Main execution
 if __name__ == "__main__":
-    create_super_admin(app)
+    # Create tables and super admin
+    try:
+        Base.metadata.create_all(engine)
+        create_super_admin(app)
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        raise
+
+    # Get port from environment or use default
     port = int(os.environ.get("PORT", 5000))
     
+    # Run in development or production mode
     if os.environ.get("FLASK_ENV") == "development":
         app.run(host='0.0.0.0', port=port, debug=True)
     else:
-        print("WARNING: Running in production mode. Make sure to use a production WSGI server!")
+        print("Running in production mode")
         from waitress import serve
-        serve(app, host='0.0.0.0', port=port)
+        serve(app, host='0.0.0.0', port=port, threads=4)
